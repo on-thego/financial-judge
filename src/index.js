@@ -64,10 +64,6 @@ async function dartFetch(endpoint, params, env) {
   return data;
 }
 
-/* =========================================================
-   기업코드 — 요청당 1번만 받아오도록 공유 Promise로 사용
-   ========================================================= */
-
 async function fetchCorpMap(env, ctx) {
   const cache = caches.default;
   const cacheKey = new Request("https://financial-judge.local/_corp_code_map");
@@ -129,17 +125,13 @@ async function fetchCorpMap(env, ctx) {
 
 async function resolveStock(stockCode, corpMapPromise) {
   const code = normalizeCode(stockCode);
-  const map = await corpMapPromise; // 10개 종목이 같은 Promise를 공유 → 실제 fetch는 요청당 1번
+  const map = await corpMapPromise;
   const company = map[code];
   if (!company) {
     throw new Error(`종목코드 ${code}에 해당하는 기업을 DART에서 찾을 수 없습니다.`);
   }
   return { stock_code: code, corp_code: company.corp_code, corp_name: company.corp_name };
 }
-
-/* =========================================================
-   계정과목 찾기
-   ========================================================= */
 
 function findAccount(items, patterns, sjDiv) {
   const pats = patterns.map(normText);
@@ -164,10 +156,6 @@ function getAmount(row, field) {
 async function fetchFinancialStatement(corpCode, year, reportCode, fsDiv, env) {
   return dartFetch("fnlttSinglAcntAll", { corp_code: corpCode, bsns_year: String(year), reprt_code: reportCode, fs_div: fsDiv }, env);
 }
-
-/* =========================================================
-   최근 3개 결산연도 — 딱 3개 연도만 시도 (더 이상 8년 탐색 안 함)
-   ========================================================= */
 
 async function fetchAnnualYears(corpCode, env) {
   const currentYear = new Date().getFullYear();
@@ -198,7 +186,6 @@ async function fetchAnnualYears(corpCode, env) {
     if (data) {
       found.push({ year, items: data.list, fs_div: fsDiv });
     }
-    // 못 찾은 연도는 건너뛰고 계속 진행 — 8년까지 뒤로 확장하지 않음
   }
 
   if (found.length === 0) {
@@ -247,10 +234,6 @@ function extractAnnualFinancials(items) {
   };
 }
 
-/* =========================================================
-   최근 분기 — 올해만 시도, 없으면 작년 1번만 더 (2년 초과 탐색 안 함)
-   ========================================================= */
-
 const QUARTER_REPORTS = [
   { code: "11014", quarter: 3, name: "3분기" },
   { code: "11012", quarter: 2, name: "2분기" },
@@ -274,7 +257,6 @@ async function tryQuarterData(corpCode, year, reportCode, env) {
 async function fetchQuarterReport(corpCode, env) {
   const currentYear = new Date().getFullYear();
 
-  // 올해 → 안 되면 작년, 딱 2년까지만 (기존 3년 루프에서 축소)
   for (const year of [currentYear, currentYear - 1]) {
     for (const report of QUARTER_REPORTS) {
       const current = await tryQuarterData(corpCode, year, report.code, env);
@@ -380,26 +362,30 @@ async function fetchLatestQuarter(corpCode, env) {
   return { current, previous, year: found.current.year, quarter: found.quarter, quarter_name: found.quarter_name };
 }
 
+// 지정 연도에 최대주주 공시가 없으면 1개년 전으로 한 번 더 시도한다.
 async function fetchLargestShareholder(corpCode, year, env) {
-  try {
-    const data = await dartFetch("hyslrSttus", { corp_code: corpCode, bsns_year: String(year), reprt_code: ANNUAL_REPORT }, env);
-    const list = data?.list || [];
-    let best = null;
-    for (const row of list) {
-      const ratio = cleanNumber(row.trmend_posesn_stock_qota_rt);
-      if (ratio === null) continue;
-      if (!best || ratio > best.ratio) {
-        best = { name: row.nm || row.stockhold_qota_rt_nm || "-", ratio, year };
+  for (const y of [year, year - 1]) {
+    try {
+      const data = await dartFetch("hyslrSttus", { corp_code: corpCode, bsns_year: String(y), reprt_code: ANNUAL_REPORT }, env);
+      const list = data?.list || [];
+      let best = null;
+      for (const row of list) {
+        const ratio = cleanNumber(row.trmend_posesn_stock_qota_rt);
+        if (ratio === null) continue;
+        if (!best || ratio > best.ratio) {
+          best = { name: row.nm || row.stockhold_qota_rt_nm || "-", ratio, year: y };
+        }
       }
+      if (best) return best;
+    } catch (e) {
+      // 다음 연도로 계속
     }
-    return best;
-  } catch (e) {
-    return null;
   }
+  return null;
 }
 
 /* =========================================================
-   판정 (기존과 동일)
+   판정 — "전부 있어야 판정" 대신 "있는 데이터로 최대한 판정"
    ========================================================= */
 
 function judge(annuals, latestQuarter, shareholder) {
@@ -408,12 +394,15 @@ function judge(annuals, latestQuarter, shareholder) {
     results.push({ key, label, value, status, rule });
   }
 
+  // 1. 매출액 증가 — 연간 추세를 기본으로 판정, 분기 데이터는 있으면 참고만 (없어도 판정 가능)
   const annualRevenue = annuals.slice().sort((a, b) => a.year - b.year);
+  const revenueYears = annualRevenue.filter((x) => x.financials.revenue !== null);
+
   let annualRevenueIncreasing = null;
-  if (annualRevenue.length === 3 && annualRevenue.every((x) => x.financials.revenue !== null)) {
-    annualRevenueIncreasing =
-      annualRevenue[0].financials.revenue < annualRevenue[1].financials.revenue &&
-      annualRevenue[1].financials.revenue < annualRevenue[2].financials.revenue;
+  if (revenueYears.length >= 2) {
+    annualRevenueIncreasing = revenueYears
+      .slice(1)
+      .every((x, i) => x.financials.revenue > revenueYears[i].financials.revenue);
   }
 
   let quarterRevenueIncreasing = null;
@@ -421,30 +410,34 @@ function judge(annuals, latestQuarter, shareholder) {
     quarterRevenueIncreasing = latestQuarter.current.revenue > latestQuarter.previous.revenue;
   }
 
+  // 분기 데이터가 있으면 연간+분기 모두 증가해야 양호, 분기 데이터가 없으면 연간 추세만으로 판정
   let revenueOk = null;
-  if (annualRevenueIncreasing !== null && quarterRevenueIncreasing !== null) {
-    revenueOk = annualRevenueIncreasing && quarterRevenueIncreasing;
+  if (annualRevenueIncreasing !== null) {
+    revenueOk = quarterRevenueIncreasing === null ? annualRevenueIncreasing : annualRevenueIncreasing && quarterRevenueIncreasing;
   }
 
   let revenueValue = "데이터 없음";
   if (annualRevenueIncreasing !== null) {
-    const trend = annualRevenue.map((x) => `${x.year} ${formatNumber(x.financials.revenue)}`).join(" → ");
-    revenueValue = `${trend} / 최근분기 전년동기 ${quarterRevenueIncreasing ? "증가" : "감소"}`;
+    const trend = revenueYears.map((x) => `${x.year} ${formatNumber(x.financials.revenue)}`).join(" → ");
+    const quarterNote = quarterRevenueIncreasing === null ? " (분기 데이터 없음)" : ` / 최근분기 전년동기 ${quarterRevenueIncreasing ? "증가" : "감소"}`;
+    revenueValue = `${trend}${quarterNote}`;
   }
 
-  addResult("revenue_growth", "매출액 증가", revenueValue, revenueOk === true ? "양호" : revenueOk === false ? "불량" : "데이터 없음", "최근 3개 결산연도 매출액이 연속 증가하고 최근분기 매출액이 전년동기 대비 증가");
+  addResult("revenue_growth", "매출액 증가", revenueValue, revenueOk === true ? "양호" : revenueOk === false ? "불량" : "데이터 없음", "결산연도 매출액이 연속 증가 (분기 데이터가 있으면 전년동기 대비 증가도 함께 확인)");
 
+  // 2. 당기순이익 연속 적자 — 값이 있는 기간만으로 연속 적자 여부 판정
   const profitPeriods = [];
   for (const annual of annuals) {
-    profitPeriods.push({ type: "annual", year: annual.year, quarter: null, value: annual.financials.net_income });
+    if (annual.financials.net_income !== null) {
+      profitPeriods.push({ type: "annual", year: annual.year, quarter: null, value: annual.financials.net_income });
+    }
   }
-  if (latestQuarter?.current) {
+  if (latestQuarter?.current?.net_income !== null && latestQuarter?.current?.net_income !== undefined) {
     profitPeriods.push({ type: "quarter", year: latestQuarter.year, quarter: latestQuarter.quarter, value: latestQuarter.current.net_income });
   }
 
   let netIncomeOk = null;
-  const allProfitData = profitPeriods.every((x) => x.value !== null);
-  if (allProfitData) {
+  if (profitPeriods.length > 0) {
     let consecutiveLoss = 0;
     let hasConsecutiveLoss = false;
     for (const p of profitPeriods) {
@@ -459,12 +452,13 @@ function judge(annuals, latestQuarter, shareholder) {
   }
 
   let netIncomeValue = "데이터 없음";
-  if (allProfitData) {
+  if (profitPeriods.length > 0) {
     netIncomeValue = profitPeriods.map((p) => (p.type === "annual" ? `${p.year}년 ${formatNumber(p.value)}` : `${p.year} Q${p.quarter} ${formatNumber(p.value)}`)).join(" / ");
   }
 
-  addResult("net_income", "당기순이익 연속 적자", netIncomeValue, netIncomeOk === true ? "양호" : netIncomeOk === false ? "불량" : "데이터 없음", "최근 3개 결산연도와 최근분기에서 연속적인 적자가 없어야 함");
+  addResult("net_income", "당기순이익 연속 적자", netIncomeValue, netIncomeOk === true ? "양호" : netIncomeOk === false ? "불량" : "데이터 없음", "확보된 결산·분기 데이터 중 2개 기간 연속 적자가 없어야 함");
 
+  // 3~5. CF (기존과 동일 — 최근 결산연도 1개년만 사용)
   const latestAnnual = annuals[0];
 
   let operatingCFOk = null;
@@ -479,33 +473,38 @@ function judge(annuals, latestQuarter, shareholder) {
   if (latestAnnual?.financials.financing_cf !== null) financingCFOk = latestAnnual.financials.financing_cf < 0;
   addResult("financing_cf", "재무활동 현금흐름", latestAnnual?.financials.financing_cf !== null ? formatNumber(latestAnnual.financials.financing_cf) : "데이터 없음", financingCFOk === true ? "양호" : financingCFOk === false ? "불량" : "데이터 없음", "최근 결산 재무활동 현금흐름 < 0");
 
+  // 6. 이자보상배율 — 확보된 기간 중 하나라도 있으면 그것들만으로 판정
   const coveragePeriods = [];
   for (const annual of annuals) {
-    coveragePeriods.push({ label: `${annual.year}년`, value: annual.financials.interest_coverage });
+    if (annual.financials.interest_coverage !== null) {
+      coveragePeriods.push({ label: `${annual.year}년`, value: annual.financials.interest_coverage });
+    }
   }
-  if (latestQuarter?.current) {
+  if (latestQuarter?.current?.interest_coverage !== null && latestQuarter?.current?.interest_coverage !== undefined) {
     coveragePeriods.push({ label: `${latestQuarter.year} Q${latestQuarter.quarter}`, value: latestQuarter.current.interest_coverage });
   }
 
-  const allCoverageData = coveragePeriods.length === 4 && coveragePeriods.every((x) => x.value !== null && Number.isFinite(Number(x.value)));
   let interestCoverageOk = null;
-  if (allCoverageData) interestCoverageOk = coveragePeriods.every((x) => Number(x.value) >= 1.0);
-
-  let interestCoverageValue = "데이터 없음";
-  if (coveragePeriods.some((x) => x.value !== null)) {
-    interestCoverageValue = coveragePeriods.map((x) => (x.value === null ? `${x.label} 데이터 없음` : `${x.label} ${formatNumber(x.value)}배`)).join(" / ");
+  if (coveragePeriods.length > 0) {
+    interestCoverageOk = coveragePeriods.every((x) => Number(x.value) >= 1.0);
   }
 
-  addResult("interest_coverage", "이자보상배율", interestCoverageValue, interestCoverageOk === true ? "양호" : interestCoverageOk === false ? "불량" : "데이터 없음", "최근 3개 결산연도와 최근분기의 이자보상배율이 모두 1.0배 이상");
+  let interestCoverageValue = "데이터 없음";
+  if (coveragePeriods.length > 0) {
+    interestCoverageValue = coveragePeriods.map((x) => `${x.label} ${formatNumber(x.value)}배`).join(" / ");
+  }
 
+  addResult("interest_coverage", "이자보상배율", interestCoverageValue, interestCoverageOk === true ? "양호" : interestCoverageOk === false ? "불량" : "데이터 없음", "확보된 결산·분기 기간의 이자보상배율이 모두 1.0배 이상");
+
+  // 7. 대주주 지분율
   let shareholderOk = null;
   if (shareholder && shareholder.ratio !== null) shareholderOk = shareholder.ratio >= 20.0;
   addResult("largest_shareholder", "대주주 지분율", shareholder ? `${formatNumber(shareholder.ratio)}%` : "데이터 없음", shareholderOk === true ? "양호" : shareholderOk === false ? "불량" : "데이터 없음", "대주주 지분율 ≥ 20.0%");
 
   const values = [revenueOk, netIncomeOk, operatingCFOk, investingCFOk, financingCFOk, interestCoverageOk, shareholderOk];
   const passed = values.filter((v) => v === true).length;
-  const evaluated = values.filter((v) => v !== null).length; // 데이터가 있어서 실제 판정한 항목 수
-  const missing = values.length - evaluated;                  // 데이터 없어서 제외된 항목 수
+  const evaluated = values.filter((v) => v !== null).length;
+  const missing = values.length - evaluated;
 
   return {
     results,
@@ -513,17 +512,12 @@ function judge(annuals, latestQuarter, shareholder) {
       interest_coverage: latestQuarter?.current?.interest_coverage ?? latestAnnual?.financials?.interest_coverage ?? null,
       largest_shareholder_pct: shareholder ? shareholder.ratio : null,
     },
-    passed,          // 충족(양호) 개수
-    evaluated,        // 데이터가 있어 실제로 평가된 항목 수
-    total_criteria: 7, // 전체 판정 항목 수 (고정)
-    missing,          // 데이터 없어 제외된 항목 수
+    passed,
+    evaluated,
+    total_criteria: 7,
+    missing,
   };
 }
-
-
-/* =========================================================
-   개별 기업 분석
-   ========================================================= */
 
 async function analyzeOne(stockCode, env, ctx, corpMapPromise) {
   const company = await resolveStock(stockCode, corpMapPromise);
@@ -551,10 +545,6 @@ async function analyzeOne(stockCode, env, ctx, corpMapPromise) {
     judgement,
   };
 }
-
-/* =========================================================
-   Worker
-   ========================================================= */
 
 export default {
   async fetch(request, env, ctx) {
@@ -584,7 +574,6 @@ export default {
           return json({ ok: false, message: "분석할 6자리 종목코드를 입력하세요." }, 400);
         }
 
-        // 기업코드 조회는 요청당 딱 1번만 시작 — 모든 종목이 같은 Promise를 공유
         const corpMapPromise = fetchCorpMap(env, ctx);
 
         const results = await Promise.all(
