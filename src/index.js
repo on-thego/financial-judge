@@ -1,5 +1,4 @@
 import { unzipSync, strFromU8 } from "fflate";
-import { XMLParser } from "fast-xml-parser";
 
 const DART_BASE = "https://opendart.fss.or.kr/api";
 const ANNUAL_REPORT = "11011";
@@ -72,46 +71,57 @@ async function fetchCorpMap(env, ctx) {
   if (!xmlEntry) throw new Error("DART 기업코드 XML을 찾지 못했습니다.");
 
   const xml = strFromU8(xmlEntry[1]);
-  const parser = new XMLParser({ ignoreAttributes: true });
-  const parsed = parser.parse(xml);
-  const list = Array.isArray(parsed?.result?.list)
-    ? parsed.result.list
-    : parsed?.result?.list
-      ? [parsed.result.list]
-      : [];
 
+  // fast-xml-parser로 전체 DOM 트리(약 10만+ 항목)를 만드는 방식은
+  // Workers CPU 시간 제한(특히 Free 플랜 10ms)을 초과하기 쉬우므로,
+  // <list>...</list> 블록을 문자열로 직접 스캔해서 필요한 3개 필드만 뽑아낸다.
   const map = {};
-  for (const item of list) {
-    const stockCode = String(item.stock_code ?? "").trim();
-    if (stockCode && stockCode !== "") {
-      map[normalizeCode(stockCode)] = {
-        corp_code: String(item.corp_code ?? "").trim(),
-        corp_name: String(item.corp_name ?? "").trim(),
+  const getTag = (block, tag) => {
+    const start = block.indexOf(`<${tag}>`);
+    if (start === -1) return "";
+    const end = block.indexOf(`</${tag}>`, start);
+    if (end === -1) return "";
+    return block.slice(start + tag.length + 2, end).trim();
+  };
+
+  let pos = 0;
+  while (true) {
+    const listStart = xml.indexOf("<list>", pos);
+    if (listStart === -1) break;
+    const listEnd = xml.indexOf("</list>", listStart);
+    if (listEnd === -1) break;
+    const block = xml.slice(listStart, listEnd);
+    pos = listEnd + 7;
+
+    const stockCode = getTag(block, "stock_code").padStart(6, "0");
+    if (stockCode.length === 6 && stockCode !== "000000") {
+      map[stockCode] = {
+        corp_code: getTag(block, "corp_code").padStart(8, "0"),
+        corp_name: getTag(block, "corp_name"),
       };
     }
   }
 
-  const payload = JSON.stringify(map);
-  ctx.waitUntil(
-    cache.put(
-      cacheKey,
-      new Response(payload, {
-        headers: {
-          "content-type": "application/json",
-          "cache-control": `max-age=${CACHE_SECONDS}`,
-        },
-      })
-    )
-  );
-  return map;
+  const out = json(map);
+  ctx.waitUntil(cache.put(cacheKey, out.clone()));
+  return out.json();
 }
 
 async function resolveStock(stockCode, env, ctx) {
   const map = await fetchCorpMap(env, ctx);
-  const code = normalizeCode(stockCode);
-  const info = map[code];
-  if (!info) throw new Error(`종목코드 ${code}에 해당하는 기업을 DART에서 찾을 수 없습니다.`);
-  return { stock_code: code, ...info };
+  const company = map[stockCode];
+  if (!company) throw new Error(`${stockCode} 종목코드를 DART에서 찾지 못했습니다.`);
+  return { stock_code: stockCode, ...company };
+}
+
+function findAccount(items, patterns, sjDiv) {
+  const pats = patterns.map(normText);
+  const rows = sjDiv ? items.filter(x => x.sj_div === sjDiv) : items;
+  for (const row of rows) {
+    const name = normText(row.account_nm);
+    if (pats.some(p => name === p || name.includes(p))) return row;
+  }
+  return null;
 }
 
 async function fetchAnnual(corpCode, env) {
@@ -128,7 +138,6 @@ async function fetchAnnual(corpCode, env) {
       }, env);
       if (data?.list?.length) return { year, items: data.list };
     } catch (e) {
-      // try CFS -> OFS fallback, then older year
       try {
         const data = await dartFetch("fnlttSinglAcntAll", {
           corp_code: corpCode,
