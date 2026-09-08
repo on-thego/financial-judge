@@ -33,13 +33,38 @@ function normText(value) {
   return String(value ?? "").replace(/[\s\u00a0]/g, "").toLowerCase();
 }
 
-// 헤더 없이 요청 (롤백 방식)
+// ========== 개선된 dartFetch ==========
+// - 리다이렉트를 수동 처리하여 무한 루프 방지
+// - Content-Type이 JSON인지 확인
+// - HTTP 상태 및 DART API status 코드 검증
 async function dartFetch(endpoint, params, env) {
   const url = new URL(`${DART_BASE}/${endpoint}.json`);
   const all = { ...params, crtfc_key: env.DART_API_KEY };
   Object.entries(all).forEach(([k, v]) => url.searchParams.set(k, v));
-  const response = await fetch(url.toString());
-  if (!response.ok) throw new Error(`DART HTTP ${response.status}`);
+
+  // 리다이렉트를 수동으로 처리 (3xx 응답을 오류로 간주)
+  const response = await fetch(url.toString(), { redirect: "manual" });
+
+  // 리다이렉트 응답 감지
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get("location") || "알 수 없음";
+    throw new Error(`DART 리다이렉트 발생 (${response.status}): ${location}`);
+  }
+
+  // HTTP 오류
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`DART HTTP ${response.status}: ${text.substring(0, 200)}`);
+  }
+
+  // Content-Type 검증
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    const text = await response.text();
+    throw new Error(`DART non-JSON 응답 (${contentType}): ${text.substring(0, 200)}`);
+  }
+
+  // JSON 파싱
   const data = await response.json();
   if (String(data.status) !== "000") {
     throw new Error(`DART ${data.status}: ${data.message || "API 오류"}`);
@@ -99,21 +124,25 @@ async function fetchCorpMap(env, ctx) {
 
 async function resolveStock(stockCode, env, ctx) {
   const map = await fetchCorpMap(env, ctx);
-  const company = map[stockCode];
-  if (!company) throw new Error(`${stockCode} 종목코드를 DART에서 찾지 못했습니다.`);
-  return { stock_code: stockCode, ...company };
+  const code = normalizeCode(stockCode);
+  const company = map[code];
+  if (!company) throw new Error(`${code} 종목코드를 DART에서 찾지 못했습니다.`);
+  return { stock_code: code, ...company };
 }
 
+// ========== 재무제표 항목 추출 ==========
 function findAccount(items, patterns, sjDiv) {
   const pats = patterns.map(normText);
-  const rows = sjDiv ? items.filter(x => x.sj_div === sjDiv) : items;
+  const rows = sjDiv ? items.filter((x) => x.sj_div === sjDiv) : items;
   for (const row of rows) {
     const name = normText(row.account_nm);
-    if (pats.some(p => name === p || name.includes(p))) return row;
+    if (pats.some((p) => name === p || name.includes(p))) return row;
   }
   for (const row of rows) {
-    const hay = normText(`${row.account_nm ?? ""} ${row.account_id ?? ""} ${row.account_detail ?? ""}`);
-    if (pats.some(p => hay.includes(p))) return row;
+    const hay = normText(
+      `${row.account_nm ?? ""} ${row.account_id ?? ""} ${row.account_detail ?? ""}`
+    );
+    if (pats.some((p) => hay.includes(p))) return row;
   }
   return null;
 }
@@ -129,30 +158,54 @@ function twoYears(row) {
 
 function extractFinancials(items) {
   const revenue = findAccount(items, ["매출액", "수익(매출액)", "Revenue"], "IS");
-  const netIncome = findAccount(items, [
-    "당기순이익",
-    "당기순이익(손실)",
-    "지배기업의소유주에게귀속되는당기순이익",
-    "ProfitLoss",
-  ], "IS");
-  const opIncome = findAccount(items, ["영업이익", "영업이익(손실)", "OperatingIncomeLoss"], "IS");
-  const interest = findAccount(items, ["이자비용", "이자비용(금융원가)", "금융원가", "InterestExpense"], "IS");
+  const netIncome = findAccount(
+    items,
+    [
+      "당기순이익",
+      "당기순이익(손실)",
+      "지배기업의소유주에게귀속되는당기순이익",
+      "ProfitLoss",
+    ],
+    "IS"
+  );
+  const opIncome = findAccount(
+    items,
+    ["영업이익", "영업이익(손실)", "OperatingIncomeLoss"],
+    "IS"
+  );
+  const interest = findAccount(
+    items,
+    ["이자비용", "이자비용(금융원가)", "금융원가", "InterestExpense"],
+    "IS"
+  );
 
-  const opCF = findAccount(items, [
-    "영업활동현금흐름",
-    "영업활동으로인한현금흐름",
-    "NetCashProvidedByUsedInOperatingActivities",
-  ], "CF");
-  const investCF = findAccount(items, [
-    "투자활동현금흐름",
-    "투자활동으로인한현금흐름",
-    "NetCashProvidedByUsedInInvestingActivities",
-  ], "CF");
-  const financeCF = findAccount(items, [
-    "재무활동현금흐름",
-    "재무활동으로인한현금흐름",
-    "NetCashProvidedByUsedInFinancingActivities",
-  ], "CF");
+  const opCF = findAccount(
+    items,
+    [
+      "영업활동현금흐름",
+      "영업활동으로인한현금흐름",
+      "NetCashProvidedByUsedInOperatingActivities",
+    ],
+    "CF"
+  );
+  const investCF = findAccount(
+    items,
+    [
+      "투자활동현금흐름",
+      "투자활동으로인한현금흐름",
+      "NetCashProvidedByUsedInInvestingActivities",
+    ],
+    "CF"
+  );
+  const financeCF = findAccount(
+    items,
+    [
+      "재무활동현금흐름",
+      "재무활동으로인한현금흐름",
+      "NetCashProvidedByUsedInFinancingActivities",
+    ],
+    "CF"
+  );
 
   return {
     revenue: twoYears(revenue),
@@ -165,33 +218,66 @@ function extractFinancials(items) {
   };
 }
 
+// ========== 연차 재무제표 조회 (CFS 우선, 실패 시 OFS) ==========
 async function fetchAnnual(corpCode, env) {
   const now = new Date();
   const firstYear = now.getUTCFullYear() - 1;
-  for (const year of [firstYear, firstYear - 1]) {
+  const years = [firstYear, firstYear - 1, firstYear - 2];
+
+  for (const year of years) {
+    // CFS 시도
     try {
-      const data = await dartFetch("fnlttSinglAcntAll", {
-        corp_code: corpCode,
-        bsns_year: year,
-        reprt_code: ANNUAL_REPORT,
-        fs_div: "CFS",
-      }, env);
+      const data = await dartFetch(
+        "fnlttSinglAcntAll",
+        {
+          corp_code: corpCode,
+          bsns_year: year,
+          reprt_code: ANNUAL_REPORT,
+          fs_div: "CFS",
+        },
+        env
+      );
       if (Array.isArray(data.list) && data.list.length) {
         return { year, items: data.list };
       }
-    } catch (_) {}
+    } catch (_) {
+      // CFS 실패 시 OFS 시도
+      try {
+        const data = await dartFetch(
+          "fnlttSinglAcntAll",
+          {
+            corp_code: corpCode,
+            bsns_year: year,
+            reprt_code: ANNUAL_REPORT,
+            fs_div: "OFS",
+          },
+          env
+        );
+        if (Array.isArray(data.list) && data.list.length) {
+          return { year, items: data.list };
+        }
+      } catch (_) {
+        // 둘 다 실패하면 다음 연도로
+        continue;
+      }
+    }
   }
-  throw new Error("최근 연차 연결재무제표를 찾지 못했습니다.");
+  throw new Error("최근 3개년 연결/별도 재무제표를 찾지 못했습니다.");
 }
 
+// ========== 최대주주 지분율 조회 ==========
 async function fetchLargestShareholder(corpCode, year, env) {
   for (const y of [year, year - 1]) {
     try {
-      const data = await dartFetch("hyslrSttus", {
-        corp_code: corpCode,
-        bsns_year: y,
-        reprt_code: ANNUAL_REPORT,
-      }, env);
+      const data = await dartFetch(
+        "hyslrSttus",
+        {
+          corp_code: corpCode,
+          bsns_year: y,
+          reprt_code: ANNUAL_REPORT,
+        },
+        env
+      );
       const items = Array.isArray(data.list) ? data.list : [];
       if (!items.length) continue;
 
@@ -208,15 +294,18 @@ async function fetchLargestShareholder(corpCode, year, env) {
       }
       return {
         year: y,
-        as_of: items[0].stlm_dt ?? null,
+        as_of: items[0]?.stlm_dt ?? null,
         pct: best?.pct ?? null,
         holder: best,
       };
-    } catch (_) {}
+    } catch (_) {
+      continue;
+    }
   }
   return { year: null, as_of: null, pct: null, holder: null };
 }
 
+// ========== 판정 로직 ==========
 function judge(fin, shareholder) {
   const revenueOk =
     fin.revenue.latest !== null &&
@@ -241,7 +330,7 @@ function judge(fin, shareholder) {
   const ownership = shareholder.pct;
   const ownershipOk = ownership !== null && ownership >= 20;
 
-  // 판정 결과 배열 (프론트엔드가 기대하는 7개 항목 순서)
+  // 프론트엔드가 기대하는 7개 항목 순서: 매출, 순이익, 영업CF, 투자CF, 재무CF, 이자보상, 대주주
   const results = [
     revenueOk,
     netIncomeOk,
@@ -252,16 +341,16 @@ function judge(fin, shareholder) {
     ownershipOk,
   ];
 
-  const nonNull = results.filter(v => v !== null);
-  const passed = nonNull.filter(v => v === true).length;
+  const nonNull = results.filter((v) => v !== null);
+  const passed = nonNull.filter((v) => v === true).length;
   const total = nonNull.length;
   const score = total ? `${passed}/${total}` : "N/A";
 
   return {
-    results,      // ✅ 배열
-    score,        // ✅ "통과/총평가"
-    passed,       // ✅ 통과 건수
-    total,        // ✅ 평가된 전체 항목 수
+    results, // 배열
+    score, // "통과/총평가"
+    passed, // 통과 건수
+    total, // 평가된 전체 항목 수
     // 개별 필드는 호환성 유지
     revenueGrowth: revenueOk,
     netIncomeOk,
@@ -278,6 +367,7 @@ function format(v) {
   return Number(v).toLocaleString("ko-KR", { maximumFractionDigits: 2 });
 }
 
+// ========== 단일 종목 분석 ==========
 async function analyzeOne(stockCode, env, ctx) {
   const company = await resolveStock(stockCode, env, ctx);
   const annual = await fetchAnnual(company.corp_code, env);
@@ -294,11 +384,15 @@ async function analyzeOne(stockCode, env, ctx) {
   };
 }
 
+// ========== Worker 진입점 ==========
 export default {
   async fetch(request, env, ctx) {
     try {
       if (!env.DART_API_KEY) {
-        return json({ ok: false, message: "Cloudflare Worker에 DART_API_KEY Secret이 설정되지 않았습니다." }, 500);
+        return json(
+          { ok: false, message: "Cloudflare Worker에 DART_API_KEY Secret이 설정되지 않았습니다." },
+          500
+        );
       }
 
       const url = new URL(request.url);
@@ -310,7 +404,10 @@ export default {
       if (url.pathname === "/api/analyze" && request.method === "POST") {
         const body = await request.json();
         const raw = Array.isArray(body.stock_codes) ? body.stock_codes : [];
-        const codes = [...new Set(raw.map(normalizeCode).filter(x => /^\d{6}$/.test(x)))].slice(0, 10);
+        const codes = [...new Set(raw.map(normalizeCode).filter((x) => /^\d{6}$/.test(x)))].slice(
+          0,
+          10
+        );
 
         if (!codes.length) {
           return json({ ok: false, message: "분석할 6자리 종목코드를 입력하세요." }, 400);
