@@ -28,11 +28,18 @@ function normalizeCode(value) {
 }
 
 function cleanNumber(value) {
-  if (value === null || value === undefined) return null;
+  if (value === null || value === undefined) {
+    return null;
+  }
 
-  let s = String(value).trim().replaceAll(",", "");
+  let s = String(value)
+    .trim()
+    .replaceAll(",", "");
 
-  if (!s || ["-", "–", "—", "N/A", "nan"].includes(s)) {
+  if (
+    !s ||
+    ["-", "–", "—", "N/A", "nan"].includes(s)
+  ) {
     return null;
   }
 
@@ -53,6 +60,20 @@ function normText(value) {
     .toLowerCase();
 }
 
+function formatNumber(value) {
+  if (
+    value === null ||
+    value === undefined ||
+    !Number.isFinite(Number(value))
+  ) {
+    return "데이터 없음";
+  }
+
+  return Number(value).toLocaleString("ko-KR", {
+    maximumFractionDigits: 2,
+  });
+}
+
 async function dartFetch(endpoint, params, env) {
   if (!env.DART_API_KEY) {
     throw new Error(
@@ -60,46 +81,54 @@ async function dartFetch(endpoint, params, env) {
     );
   }
 
-  const url = new URL(`${DART_BASE}/${endpoint}.json`);
+  const url = new URL(
+    `${DART_BASE}/${endpoint}.json`
+  );
 
   const allParams = {
     ...params,
     crtfc_key: env.DART_API_KEY,
   };
 
-  Object.entries(allParams).forEach(([key, value]) => {
-    url.searchParams.set(key, String(value));
-  });
+  Object.entries(allParams).forEach(
+    ([key, value]) => {
+      url.searchParams.set(
+        key,
+        String(value)
+      );
+    }
+  );
 
-  const response = await fetch(url.toString(), {
-    headers: DART_FETCH_HEADERS,
-  });
+  const response = await fetch(
+    url.toString(),
+    {
+      headers: DART_FETCH_HEADERS,
+    }
+  );
 
   if (!response.ok) {
-    throw new Error(`DART HTTP ${response.status}`);
+    throw new Error(
+      `DART HTTP ${response.status}`
+    );
   }
 
   const data = await response.json();
 
   if (String(data.status) !== "000") {
     throw new Error(
-      `DART ${data.status}: ${data.message || "API 오류"}`
+      `DART ${data.status}: ${
+        data.message || "API 오류"
+      }`
     );
   }
 
   return data;
 }
 
-/**
- * DART corpCode.xml
- *
- * 종목코드 -> {
- *   corp_code,
- *   corp_name
- * }
- *
- * 구조로 변환한다.
- */
+/* =========================================================
+   기업코드
+   ========================================================= */
+
 async function fetchCorpMap(env, ctx) {
   const cache = caches.default;
 
@@ -107,23 +136,27 @@ async function fetchCorpMap(env, ctx) {
     "https://financial-judge.local/_corp_code_map"
   );
 
-  // 캐시 확인
   const cached = await cache.match(cacheKey);
 
   if (cached) {
     return cached.json();
   }
 
-  const url = new URL(`${DART_BASE}/corpCode.xml`);
+  const url = new URL(
+    `${DART_BASE}/corpCode.xml`
+  );
 
   url.searchParams.set(
     "crtfc_key",
     env.DART_API_KEY
   );
 
-  const response = await fetch(url.toString(), {
-    headers: DART_FETCH_HEADERS,
-  });
+  const response = await fetch(
+    url.toString(),
+    {
+      headers: DART_FETCH_HEADERS,
+    }
+  );
 
   if (!response.ok) {
     throw new Error(
@@ -246,19 +279,18 @@ async function fetchCorpMap(env, ctx) {
     }
   }
 
-  const payload = JSON.stringify(map);
+  const payload =
+    JSON.stringify(map);
 
-  const cacheResponse = new Response(
-    payload,
-    {
+  const cacheResponse =
+    new Response(payload, {
       headers: {
         "content-type":
           "application/json; charset=utf-8",
         "cache-control":
           `max-age=${CACHE_SECONDS}`,
       },
-    }
-  );
+    });
 
   ctx.waitUntil(
     cache.put(
@@ -275,12 +307,14 @@ async function resolveStock(
   env,
   ctx
 ) {
-  const code = normalizeCode(stockCode);
+  const code =
+    normalizeCode(stockCode);
 
-  const map = await fetchCorpMap(
-    env,
-    ctx
-  );
+  const map =
+    await fetchCorpMap(
+      env,
+      ctx
+    );
 
   const company = map[code];
 
@@ -292,20 +326,24 @@ async function resolveStock(
 
   return {
     stock_code: code,
-    corp_code: company.corp_code,
-    corp_name: company.corp_name,
+    corp_code:
+      company.corp_code,
+    corp_name:
+      company.corp_name,
   };
 }
 
-/**
- * 계정과목 찾기
- */
+/* =========================================================
+   계정과목 찾기
+   ========================================================= */
+
 function findAccount(
   items,
   patterns,
   sjDiv
 ) {
-  const pats = patterns.map(normText);
+  const pats =
+    patterns.map(normText);
 
   const rows = sjDiv
     ? items.filter(
@@ -313,16 +351,28 @@ function findAccount(
       )
     : items;
 
+  // 1차: 정확히 일치
   for (const row of rows) {
-    const name = normText(
-      row.account_nm
-    );
+    const name =
+      normText(row.account_nm);
 
     if (
       pats.some(
-        (p) =>
-          name === p ||
-          name.includes(p)
+        (p) => name === p
+      )
+    ) {
+      return row;
+    }
+  }
+
+  // 2차: 포함
+  for (const row of rows) {
+    const name =
+      normText(row.account_nm);
+
+    if (
+      pats.some(
+        (p) => name.includes(p)
       )
     ) {
       return row;
@@ -332,100 +382,852 @@ function findAccount(
   return null;
 }
 
-/**
- * 최근 사업보고서 조회
- *
- * 현재 연도 → 전년도 → 전전년도 순으로 검색
- */
-async function fetchAnnual(
-  corpCode,
-  env
-) {
-  const now = new Date();
-
-  const thisYear =
-    now.getFullYear();
-
-  const years = [
-    thisYear,
-    thisYear - 1,
-    thisYear - 2,
-  ];
-
-  const errors = [];
-
-  for (const year of years) {
-    // 연결재무제표
-    try {
-      const data =
-        await dartFetch(
-          "fnlttSinglAcntAll",
-          {
-            corp_code: corpCode,
-            bsns_year: String(year),
-            reprt_code:
-              ANNUAL_REPORT,
-            fs_div: "CFS",
-          },
-          env
-        );
-
-      if (
-        Array.isArray(data.list) &&
-        data.list.length > 0
-      ) {
-        return {
-          year,
-          items: data.list,
-          fs_div: "CFS",
-        };
-      }
-    } catch (e) {
-      errors.push(
-        `CFS ${year}: ${e.message}`
-      );
-    }
-
-    // 별도재무제표
-    try {
-      const data =
-        await dartFetch(
-          "fnlttSinglAcntAll",
-          {
-            corp_code: corpCode,
-            bsns_year: String(year),
-            reprt_code:
-              ANNUAL_REPORT,
-            fs_div: "OFS",
-          },
-          env
-        );
-
-      if (
-        Array.isArray(data.list) &&
-        data.list.length > 0
-      ) {
-        return {
-          year,
-          items: data.list,
-          fs_div: "OFS",
-        };
-      }
-    } catch (e) {
-      errors.push(
-        `OFS ${year}: ${e.message}`
-      );
-    }
+function getAmount(row, field) {
+  if (!row) {
+    return null;
   }
 
-  throw new Error(
-    "최근 3개년 사업보고서 재무제표를 찾을 수 없습니다."
+  return cleanNumber(
+    row[field]
   );
 }
 
-/**
- * 최대주주 조회
+/* =========================================================
+   재무제표 API
+   ========================================================= */
+
+async function fetchFinancialStatement(
+  corpCode,
+  year,
+  reportCode,
+  fsDiv,
+  env
+) {
+  return dartFetch(
+    "fnlttSinglAcntAll",
+    {
+      corp_code: corpCode,
+      bsns_year: String(year),
+      reprt_code: reportCode,
+      fs_div: fsDiv,
+    },
+    env
+  );
+}
+
+/* =========================================================
+   최근 3개 결산연도 자동 탐색
+   ========================================================= */
+
+async function fetchAnnualYears(
+  corpCode,
+  env
+) {
+  const currentYear =
+    new Date().getFullYear();
+
+  const found = [];
+
+  /*
+   * 현재연도는 아직 결산이 끝나지 않았을 수 있으므로
+   * currentYear - 1부터 찾는다.
+   *
+   * 예:
+   * 2026년 실행
+   * → 2025 / 2024 / 2023
+   *
+   * 2027년 실행
+   * → 2026 / 2025 / 2024
+   */
+  for (
+    let year = currentYear - 1;
+    year >= currentYear - 8;
+    year--
+  ) {
+    let data = null;
+    let fsDiv = "CFS";
+
+    // 연결
+    try {
+      data =
+        await fetchFinancialStatement(
+          corpCode,
+          year,
+          ANNUAL_REPORT,
+          "CFS",
+          env
+        );
+
+      if (
+        !data?.list?.length
+      ) {
+        data = null;
+      }
+    } catch (e) {
+      data = null;
+    }
+
+    // 별도
+    if (!data) {
+      try {
+        data =
+          await fetchFinancialStatement(
+            corpCode,
+            year,
+            ANNUAL_REPORT,
+            "OFS",
+            env
+          );
+
+        fsDiv = "OFS";
+
+        if (
+          !data?.list?.length
+        ) {
+          data = null;
+        }
+      } catch (e) {
+        data = null;
+      }
+    }
+
+    if (data) {
+      found.push({
+        year,
+        items: data.list,
+        fs_div: fsDiv,
+      });
+    }
+
+    if (found.length >= 3) {
+      break;
+    }
+  }
+
+  if (found.length < 3) {
+    throw new Error(
+      "최근 3개 회계결산 재무제표를 찾을 수 없습니다."
+    );
+  }
+
+  return found;
+}
+
+/* =========================================================
+   결산 재무 데이터
+   ========================================================= */
+
+function extractAnnualFinancials(
+  items
+) {
+  const revenue =
+    findAccount(
+      items,
+      [
+        "매출액",
+        "수익(매출액)",
+        "영업수익",
+      ],
+      "IS"
+    );
+
+  const netIncome =
+    findAccount(
+      items,
+      [
+        "당기순이익",
+        "당기순이익(손실)",
+        "당기순손익",
+      ],
+      "IS"
+    );
+
+  const operatingCF =
+    findAccount(
+      items,
+      [
+        "영업활동으로인한현금흐름",
+        "영업활동현금흐름",
+      ],
+      "CF"
+    );
+
+  const investingCF =
+    findAccount(
+      items,
+      [
+        "투자활동으로인한현금흐름",
+        "투자활동현금흐름",
+      ],
+      "CF"
+    );
+
+  const financingCF =
+    findAccount(
+      items,
+      [
+        "재무활동으로인한현금흐름",
+        "재무활동현금흐름",
+      ],
+      "CF"
+    );
+
+  const interestExpense =
+    findAccount(
+      items,
+      [
+        "이자비용",
+      ],
+      "IS"
+    );
+
+  const operatingIncome =
+    findAccount(
+      items,
+      [
+        "영업이익",
+        "영업이익(손실)",
+      ],
+      "IS"
+    );
+
+  const current = (row) =>
+    getAmount(
+      row,
+      "thstrm_amount"
+    );
+
+  const previous = (row) =>
+    getAmount(
+      row,
+      "frmtrm_amount"
+    );
+
+  const revenueValue =
+    current(revenue);
+
+  const netIncomeValue =
+    current(netIncome);
+
+  const operatingCFValue =
+    current(operatingCF);
+
+  const investingCFValue =
+    current(investingCF);
+
+  const financingCFValue =
+    current(financingCF);
+
+  const interestValue =
+    current(interestExpense);
+
+  const operatingIncomeValue =
+    current(operatingIncome);
+
+  let interestCoverage = null;
+
+  if (
+    operatingIncomeValue !== null &&
+    interestValue !== null &&
+    interestValue !== 0
+  ) {
+    interestCoverage =
+      operatingIncomeValue /
+      Math.abs(interestValue);
+  }
+
+  return {
+    revenue:
+      revenueValue,
+
+    previous_revenue:
+      previous(revenue),
+
+    net_income:
+      netIncomeValue,
+
+    previous_net_income:
+      previous(netIncome),
+
+    operating_cf:
+      operatingCFValue,
+
+    investing_cf:
+      investingCFValue,
+
+    financing_cf:
+      financingCFValue,
+
+    operating_income:
+      operatingIncomeValue,
+
+    interest_expense:
+      interestValue,
+
+    interest_coverage:
+      interestCoverage,
+  };
+}
+
+/* =========================================================
+   최근 분기 자동 탐색
+   ========================================================= */
+
+/*
+ * DART 보고서 코드
+ *
+ * 11013 = 1분기보고서
+ * 11012 = 반기보고서
+ * 11014 = 3분기보고서
+ *
+ * 실제 분기값을 만들기 위해
+ * 누적값을 사용하는 방식:
+ *
+ * Q1 = Q1 누적
+ * Q2 = H1 - Q1
+ * Q3 = Q3 누적 - H1
  */
+
+const QUARTER_REPORTS = [
+  {
+    code: "11014",
+    quarter: 3,
+    name: "3분기",
+  },
+  {
+    code: "11012",
+    quarter: 2,
+    name: "2분기",
+  },
+  {
+    code: "11013",
+    quarter: 1,
+    name: "1분기",
+  },
+];
+
+async function tryQuarterData(
+  corpCode,
+  year,
+  reportCode,
+  env
+) {
+  // 연결 우선
+  try {
+    const data =
+      await fetchFinancialStatement(
+        corpCode,
+        year,
+        reportCode,
+        "CFS",
+        env
+      );
+
+    if (
+      data?.list?.length
+    ) {
+      return {
+        year,
+        report_code:
+          reportCode,
+        items: data.list,
+        fs_div: "CFS",
+      };
+    }
+  } catch (e) {}
+
+  // 별도
+  try {
+    const data =
+      await fetchFinancialStatement(
+        corpCode,
+        year,
+        reportCode,
+        "OFS",
+        env
+      );
+
+    if (
+      data?.list?.length
+    ) {
+      return {
+        year,
+        report_code:
+          reportCode,
+        items: data.list,
+        fs_div: "OFS",
+      };
+    }
+  } catch (e) {}
+
+  return null;
+}
+
+async function fetchQuarterReport(
+  corpCode,
+  env
+) {
+  const currentYear =
+    new Date().getFullYear();
+
+  /*
+   * 현재연도부터 과거로 탐색.
+   *
+   * 2026년 9월:
+   * 2026 Q3가 아직 없으면
+   * 2026 Q2
+   * → 2026 Q1
+   *
+   * 2027년에 실행하면
+   * 2027 Q3
+   * → Q2
+   * → Q1
+   */
+  for (
+    let year = currentYear;
+    year >= currentYear - 2;
+    year--
+  ) {
+    for (
+      const report of QUARTER_REPORTS
+    ) {
+      const current =
+        await tryQuarterData(
+          corpCode,
+          year,
+          report.code,
+          env
+        );
+
+      if (!current) {
+        continue;
+      }
+
+      let previous = null;
+
+      /*
+       * 전년동기 자료
+       */
+      previous =
+        await tryQuarterData(
+          corpCode,
+          year - 1,
+          report.code,
+          env
+        );
+
+      return {
+        current,
+        previous,
+        quarter:
+          report.quarter,
+        quarter_name:
+          report.name,
+      };
+    }
+  }
+
+  return null;
+}
+
+/* =========================================================
+   누적 재무제표에서 특정 계정 값 가져오기
+   ========================================================= */
+
+function getStatementValue(
+  items,
+  patterns,
+  sjDiv
+) {
+  const row =
+    findAccount(
+      items,
+      patterns,
+      sjDiv
+    );
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    current:
+      cleanNumber(
+        row.thstrm_amount
+      ),
+
+    previous:
+      cleanNumber(
+        row.frmtrm_amount
+      ),
+  };
+}
+
+/* =========================================================
+   분기 실제 값 계산
+   ========================================================= */
+
+function extractQuarterCumulative(
+  report
+) {
+  if (!report) {
+    return null;
+  }
+
+  const items =
+    report.items;
+
+  const revenue =
+    getStatementValue(
+      items,
+      [
+        "매출액",
+        "수익(매출액)",
+        "영업수익",
+      ],
+      "IS"
+    );
+
+  const netIncome =
+    getStatementValue(
+      items,
+      [
+        "당기순이익",
+        "당기순이익(손실)",
+        "당기순손익",
+      ],
+      "IS"
+    );
+
+  const operatingIncome =
+    getStatementValue(
+      items,
+      [
+        "영업이익",
+        "영업이익(손실)",
+      ],
+      "IS"
+    );
+
+  const interestExpense =
+    getStatementValue(
+      items,
+      [
+        "이자비용",
+      ],
+      "IS"
+    );
+
+  return {
+    revenue:
+      revenue?.current ?? null,
+
+    net_income:
+      netIncome?.current ?? null,
+
+    operating_income:
+      operatingIncome?.current ?? null,
+
+    interest_expense:
+      interestExpense?.current ?? null,
+  };
+}
+
+/* =========================================================
+   Q1 / Q2 / Q3 실제 분기값
+   ========================================================= */
+
+function subtractValues(
+  current,
+  previous
+) {
+  if (
+    current === null ||
+    current === undefined
+  ) {
+    return null;
+  }
+
+  if (
+    previous === null ||
+    previous === undefined
+  ) {
+    return null;
+  }
+
+  return current - previous;
+}
+
+async function buildQuarterData(
+  corpCode,
+  year,
+  quarter,
+  report,
+  env
+) {
+  const cumulative =
+    extractQuarterCumulative(
+      report
+    );
+
+  if (!cumulative) {
+    return null;
+  }
+
+  /*
+   * 1분기는 누적값 자체가 실제 1분기
+   */
+  if (quarter === 1) {
+    return {
+      year,
+      quarter,
+
+      revenue:
+        cumulative.revenue,
+
+      net_income:
+        cumulative.net_income,
+
+      operating_income:
+        cumulative.operating_income,
+
+      interest_expense:
+        cumulative.interest_expense,
+
+      interest_coverage:
+        calculateInterestCoverage(
+          cumulative.operating_income,
+          cumulative.interest_expense
+        ),
+    };
+  }
+
+  /*
+   * Q2:
+   *
+   * 반기 누적 - 1분기 누적
+   */
+  if (quarter === 2) {
+    const q1 =
+      await tryQuarterData(
+        corpCode,
+        year,
+        "11013",
+        env
+      );
+
+    const q1Values =
+      extractQuarterCumulative(
+        q1
+      );
+
+    if (!q1Values) {
+      return {
+        year,
+        quarter,
+        revenue: null,
+        net_income: null,
+        operating_income: null,
+        interest_expense: null,
+        interest_coverage: null,
+      };
+    }
+
+    const revenue =
+      subtractValues(
+        cumulative.revenue,
+        q1Values.revenue
+      );
+
+    const netIncome =
+      subtractValues(
+        cumulative.net_income,
+        q1Values.net_income
+      );
+
+    const operatingIncome =
+      subtractValues(
+        cumulative.operating_income,
+        q1Values.operating_income
+      );
+
+    const interestExpense =
+      subtractValues(
+        cumulative.interest_expense,
+        q1Values.interest_expense
+      );
+
+    return {
+      year,
+      quarter,
+      revenue,
+      net_income:
+        netIncome,
+      operating_income:
+        operatingIncome,
+      interest_expense:
+        interestExpense,
+      interest_coverage:
+        calculateInterestCoverage(
+          operatingIncome,
+          interestExpense
+        ),
+    };
+  }
+
+  /*
+   * Q3:
+   *
+   * 3분기 누적 - 반기 누적
+   */
+  if (quarter === 3) {
+    const h1 =
+      await tryQuarterData(
+        corpCode,
+        year,
+        "11012",
+        env
+      );
+
+    const h1Values =
+      extractQuarterCumulative(
+        h1
+      );
+
+    if (!h1Values) {
+      return {
+        year,
+        quarter,
+        revenue: null,
+        net_income: null,
+        operating_income: null,
+        interest_expense: null,
+        interest_coverage: null,
+      };
+    }
+
+    const revenue =
+      subtractValues(
+        cumulative.revenue,
+        h1Values.revenue
+      );
+
+    const netIncome =
+      subtractValues(
+        cumulative.net_income,
+        h1Values.net_income
+      );
+
+    const operatingIncome =
+      subtractValues(
+        cumulative.operating_income,
+        h1Values.operating_income
+      );
+
+    const interestExpense =
+      subtractValues(
+        cumulative.interest_expense,
+        h1Values.interest_expense
+      );
+
+    return {
+      year,
+      quarter,
+      revenue,
+      net_income:
+        netIncome,
+      operating_income:
+        operatingIncome,
+      interest_expense:
+        interestExpense,
+      interest_coverage:
+        calculateInterestCoverage(
+          operatingIncome,
+          interestExpense
+        ),
+    };
+  }
+
+  return null;
+}
+
+function calculateInterestCoverage(
+  operatingIncome,
+  interestExpense
+) {
+  if (
+    operatingIncome === null ||
+    interestExpense === null ||
+    interestExpense === 0
+  ) {
+    return null;
+  }
+
+  return (
+    operatingIncome /
+    Math.abs(interestExpense)
+  );
+}
+
+/* =========================================================
+   최근 분기 + 전년동기 실제값
+   ========================================================= */
+
+async function fetchLatestQuarter(
+  corpCode,
+  env
+) {
+  const found =
+    await fetchQuarterReport(
+      corpCode,
+      env
+    );
+
+  if (!found) {
+    return null;
+  }
+
+  const current =
+    await buildQuarterData(
+      corpCode,
+      found.current.year,
+      found.quarter,
+      found.current,
+      env
+    );
+
+  let previous = null;
+
+  if (found.previous) {
+    previous =
+      await buildQuarterData(
+        corpCode,
+        found.previous.year,
+        found.quarter,
+        found.previous,
+        env
+      );
+  }
+
+  return {
+    current,
+    previous,
+
+    year:
+      found.current.year,
+
+    quarter:
+      found.quarter,
+
+    quarter_name:
+      found.quarter_name,
+  };
+}
+
+/* =========================================================
+   최대주주
+   ========================================================= */
+
 async function fetchLargestShareholder(
   corpCode,
   year,
@@ -436,8 +1238,10 @@ async function fetchLargestShareholder(
       await dartFetch(
         "hyslrSttus",
         {
-          corp_code: corpCode,
-          bsns_year: String(year),
+          corp_code:
+            corpCode,
+          bsns_year:
+            String(year),
           reprt_code:
             ANNUAL_REPORT,
         },
@@ -482,174 +1286,27 @@ async function fetchLargestShareholder(
   }
 }
 
-/**
- * 재무 데이터 추출
- */
-function extractFinancials(
-  items
-) {
-  const revenue =
-    findAccount(
-      items,
-      [
-        "매출액",
-        "수익(매출액)",
-        "영업수익",
-      ],
-      "IS"
-    );
+/* =========================================================
+   판정
+   ========================================================= */
 
-  const netIncome =
-    findAccount(
-      items,
-      [
-        "당기순이익",
-        "당기순이익(손실)",
-      ],
-      "IS"
-    );
-
-  const operatingCF =
-    findAccount(
-      items,
-      [
-        "영업활동으로인한현금흐름",
-        "영업활동현금흐름",
-      ],
-      "CF"
-    );
-
-  const investingCF =
-    findAccount(
-      items,
-      [
-        "투자활동으로인한현금흐름",
-        "투자활동현금흐름",
-      ],
-      "CF"
-    );
-
-  const financingCF =
-    findAccount(
-      items,
-      [
-        "재무활동으로인한현금흐름",
-        "재무활동현금흐름",
-      ],
-      "CF"
-    );
-
-  const interestExpense =
-    findAccount(
-      items,
-      ["이자비용"],
-      "IS"
-    );
-
-  const operatingIncome =
-    findAccount(
-      items,
-      [
-        "영업이익",
-        "영업이익(손실)",
-      ],
-      "IS"
-    );
-
-  function pair(row) {
-    return {
-      curr:
-        row
-          ? cleanNumber(
-              row.thstrm_amount
-            )
-          : null,
-
-      prev:
-        row
-          ? cleanNumber(
-              row.frmtrm_amount
-            )
-          : null,
-    };
-  }
-
-  const revenueData =
-    pair(revenue);
-
-  const netIncomeData =
-    pair(netIncome);
-
-  const operatingCFData =
-    pair(operatingCF);
-
-  const investingCFData =
-    pair(investingCF);
-
-  const financingCFData =
-    pair(financingCF);
-
-  const interestExpenseData =
-    pair(interestExpense);
-
-  const operatingIncomeData =
-    pair(operatingIncome);
-
-  let interestCoverage =
-    null;
-
-  if (
-    operatingIncomeData.curr !==
-      null &&
-    interestExpenseData.curr !==
-      null &&
-    interestExpenseData.curr !== 0
-  ) {
-    interestCoverage =
-      operatingIncomeData.curr /
-      Math.abs(
-        interestExpenseData.curr
-      );
-  }
-
-  return {
-    revenue: revenueData,
-
-    netIncome: netIncomeData,
-
-    operatingCF:
-      operatingCFData,
-
-    investingCF:
-      investingCFData,
-
-    financingCF:
-      financingCFData,
-
-    interestExpense:
-      interestExpenseData,
-
-    operatingIncome:
-      operatingIncomeData,
-
-    interestCoverage,
-  };
-}
-
-/**
- * 판정 결과 생성
- *
- * index.html에서 사용하는 구조:
- *
- * judgement.results
- * judgement.derived
- * judgement.score
- * judgement.total
- */
 function judge(
-  financials,
+  annuals,
+  latestQuarter,
   shareholder
 ) {
+  /*
+   * annuals:
+   *
+   * 최신 → 과거
+   *
+   * [
+   *   {year: 2025, ...},
+   *   {year: 2024, ...},
+   *   {year: 2023, ...}
+   * ]
+   */
+
   const results = [];
 
   function addResult(
@@ -668,176 +1325,411 @@ function judge(
     });
   }
 
-  // 1. 매출액 증가
-  let revenueGrowth = null;
+  /* -------------------------------------------------------
+     1. 매출액 증가
+     ------------------------------------------------------- */
+
+  const annualRevenue =
+    annuals
+      .slice()
+      .sort(
+        (a, b) =>
+          a.year - b.year
+      );
+
+  let annualRevenueIncreasing =
+    null;
 
   if (
-    financials.revenue.curr !==
+    annualRevenue.length === 3 &&
+    annualRevenue.every(
+      (x) =>
+        x.financials.revenue !==
+        null
+    )
+  ) {
+    annualRevenueIncreasing =
+      annualRevenue[0]
+        .financials.revenue <
+        annualRevenue[1]
+          .financials.revenue &&
+      annualRevenue[1]
+        .financials.revenue <
+        annualRevenue[2]
+          .financials.revenue;
+  }
+
+  let quarterRevenueIncreasing =
+    null;
+
+  if (
+    latestQuarter?.current &&
+    latestQuarter?.previous &&
+    latestQuarter.current.revenue !==
       null &&
-    financials.revenue.prev !==
+    latestQuarter.previous.revenue !==
       null
   ) {
-    revenueGrowth =
-      financials.revenue.curr >
-      financials.revenue.prev;
+    quarterRevenueIncreasing =
+      latestQuarter.current.revenue >
+      latestQuarter.previous.revenue;
+  }
+
+  /*
+   * 두 조건을 모두 만족해야 양호
+   */
+  let revenueOk = null;
+
+  if (
+    annualRevenueIncreasing !==
+      null &&
+    quarterRevenueIncreasing !==
+      null
+  ) {
+    revenueOk =
+      annualRevenueIncreasing &&
+      quarterRevenueIncreasing;
+  }
+
+  let revenueValue =
+    "데이터 없음";
+
+  if (
+    annualRevenueIncreasing !==
+      null
+  ) {
+    const trend =
+      annualRevenue
+        .map(
+          (x) =>
+            `${x.year} ${formatNumber(
+              x.financials.revenue
+            )}`
+        )
+        .join(" → ");
+
+    revenueValue =
+      `${trend} / 최근분기 전년동기 ${
+        quarterRevenueIncreasing
+          ? "증가"
+          : "감소"
+      }`;
   }
 
   addResult(
     "revenue_growth",
     "매출액 증가",
-    financials.revenue.curr !==
-      null
-      ? financials.revenue.curr
-      : "데이터 없음",
-    revenueGrowth === true
+    revenueValue,
+    revenueOk === true
       ? "양호"
-      : revenueGrowth === false
+      : revenueOk === false
         ? "불량"
         : "데이터 없음",
-    "최근년도 > 전년도"
+    "최근 3개 결산연도 매출액이 연속 증가하고 최근분기 매출액이 전년동기 대비 증가"
   );
 
-  // 2. 순이익
-  let netIncomeOk = null;
+  /* -------------------------------------------------------
+     2. 당기순이익 연속 적자
+     ------------------------------------------------------- */
+
+  const profitPeriods = [];
+
+  for (const annual of annuals) {
+    profitPeriods.push({
+      type: "annual",
+      year: annual.year,
+      quarter: null,
+      value:
+        annual.financials.net_income,
+    });
+  }
 
   if (
-    financials.netIncome.curr !==
-    null
+    latestQuarter?.current
   ) {
+    profitPeriods.push({
+      type: "quarter",
+      year:
+        latestQuarter.year,
+      quarter:
+        latestQuarter.quarter,
+      value:
+        latestQuarter.current
+          .net_income,
+    });
+  }
+
+  let netIncomeOk = null;
+
+  const allProfitData =
+    profitPeriods.every(
+      (x) => x.value !== null
+    );
+
+  if (allProfitData) {
+    /*
+     * 연속 적자 판단.
+     *
+     * 4개 기간 중 음수가 연속으로
+     * 2번 이상 나타나면 불량.
+     */
+    let consecutiveLoss = 0;
+    let hasConsecutiveLoss =
+      false;
+
+    for (const p of profitPeriods) {
+      if (p.value < 0) {
+        consecutiveLoss++;
+
+        if (
+          consecutiveLoss >= 2
+        ) {
+          hasConsecutiveLoss =
+            true;
+        }
+      } else {
+        consecutiveLoss = 0;
+      }
+    }
+
     netIncomeOk =
-      financials.netIncome.curr >=
-      0;
+      !hasConsecutiveLoss;
+  }
+
+  let netIncomeValue =
+    "데이터 없음";
+
+  if (allProfitData) {
+    netIncomeValue =
+      profitPeriods
+        .map((p) => {
+          if (
+            p.type ===
+            "annual"
+          ) {
+            return `${p.year}년 ${formatNumber(
+              p.value
+            )}`;
+          }
+
+          return `${p.year} Q${p.quarter} ${formatNumber(
+            p.value
+          )}`;
+        })
+        .join(" / ");
   }
 
   addResult(
     "net_income",
-    "당기순이익",
-    financials.netIncome.curr !==
-      null
-      ? financials.netIncome.curr
-      : "데이터 없음",
+    "당기순이익 연속 적자",
+    netIncomeValue,
     netIncomeOk === true
       ? "양호"
       : netIncomeOk === false
         ? "불량"
         : "데이터 없음",
-    "최근년도 순이익 ≥ 0"
+    "최근 3개 결산연도와 최근분기에서 연속적인 적자가 없어야 함"
   );
 
-  // 3. 영업활동 CF
+  /* -------------------------------------------------------
+     3. 영업활동 CF
+     ------------------------------------------------------- */
+
+  const latestAnnual =
+    annuals[0];
+
   let operatingCFOk = null;
 
   if (
-    financials.operatingCF.curr !==
-    null
+    latestAnnual?.financials
+      .operating_cf !== null
   ) {
     operatingCFOk =
-      financials.operatingCF.curr >
-      0;
+      latestAnnual.financials
+        .operating_cf > 0;
   }
 
   addResult(
     "operating_cf",
     "영업활동 현금흐름",
-    financials.operatingCF.curr !==
-      null
-      ? financials.operatingCF.curr
+    latestAnnual?.financials
+      .operating_cf !== null
+      ? formatNumber(
+          latestAnnual.financials
+            .operating_cf
+        )
       : "데이터 없음",
     operatingCFOk === true
       ? "양호"
       : operatingCFOk === false
         ? "불량"
         : "데이터 없음",
-    "0 초과"
+    "최근 결산 영업활동 현금흐름 > 0"
   );
 
-  // 4. 투자활동 CF
+  /* -------------------------------------------------------
+     4. 투자활동 CF
+     ------------------------------------------------------- */
+
   let investingCFOk = null;
 
   if (
-    financials.investingCF.curr !==
-    null
+    latestAnnual?.financials
+      .investing_cf !== null
   ) {
     investingCFOk =
-      financials.investingCF.curr <
-      0;
+      latestAnnual.financials
+        .investing_cf < 0;
   }
 
   addResult(
     "investing_cf",
     "투자활동 현금흐름",
-    financials.investingCF.curr !==
-      null
-      ? financials.investingCF.curr
+    latestAnnual?.financials
+      .investing_cf !== null
+      ? formatNumber(
+          latestAnnual.financials
+            .investing_cf
+        )
       : "데이터 없음",
     investingCFOk === true
       ? "양호"
       : investingCFOk === false
         ? "불량"
         : "데이터 없음",
-    "0 미만"
+    "최근 결산 투자활동 현금흐름 < 0"
   );
 
-  // 5. 재무활동 CF
+  /* -------------------------------------------------------
+     5. 재무활동 CF
+     ------------------------------------------------------- */
+
   let financingCFOk = null;
 
   if (
-    financials.financingCF.curr !==
-    null
+    latestAnnual?.financials
+      .financing_cf !== null
   ) {
     financingCFOk =
-      financials.financingCF.curr <
-      0;
+      latestAnnual.financials
+        .financing_cf < 0;
   }
 
   addResult(
     "financing_cf",
     "재무활동 현금흐름",
-    financials.financingCF.curr !==
-      null
-      ? financials.financingCF.curr
+    latestAnnual?.financials
+      .financing_cf !== null
+      ? formatNumber(
+          latestAnnual.financials
+            .financing_cf
+        )
       : "데이터 없음",
     financingCFOk === true
       ? "양호"
       : financingCFOk === false
         ? "불량"
         : "데이터 없음",
-    "0 미만"
+    "최근 결산 재무활동 현금흐름 < 0"
   );
 
-  // 6. 이자보상배율
-  let interestCoverageOk = null;
+  /* -------------------------------------------------------
+     6. 이자보상배율
+     ------------------------------------------------------- */
+
+  const coveragePeriods = [];
+
+  for (const annual of annuals) {
+    coveragePeriods.push({
+      label:
+        `${annual.year}년`,
+      value:
+        annual.financials
+          .interest_coverage,
+    });
+  }
 
   if (
-    financials.interestCoverage !==
-    null
+    latestQuarter?.current
   ) {
+    coveragePeriods.push({
+      label:
+        `${latestQuarter.year} Q${latestQuarter.quarter}`,
+      value:
+        latestQuarter.current
+          .interest_coverage,
+    });
+  }
+
+  /*
+   * 매우 엄격한 조건:
+   *
+   * 4개 기간 모두 데이터 존재
+   * AND
+   * 4개 기간 모두 1.0 이상
+   */
+  const allCoverageData =
+    coveragePeriods.length === 4 &&
+    coveragePeriods.every(
+      (x) =>
+        x.value !== null &&
+        Number.isFinite(
+          Number(x.value)
+        )
+    );
+
+  let interestCoverageOk =
+    null;
+
+  if (allCoverageData) {
     interestCoverageOk =
-      financials.interestCoverage >=
-      1.0;
+      coveragePeriods.every(
+        (x) =>
+          Number(x.value) >=
+          1.0
+      );
+  }
+
+  let interestCoverageValue =
+    "데이터 없음";
+
+  if (
+    coveragePeriods.some(
+      (x) => x.value !== null
+    )
+  ) {
+    interestCoverageValue =
+      coveragePeriods
+        .map((x) => {
+          if (
+            x.value === null
+          ) {
+            return `${x.label} 데이터 없음`;
+          }
+
+          return `${x.label} ${formatNumber(
+            x.value
+          )}배`;
+        })
+        .join(" / ");
   }
 
   addResult(
     "interest_coverage",
     "이자보상배율",
-    financials.interestCoverage !==
-      null
-      ? `${financials.interestCoverage.toLocaleString(
-          "ko-KR",
-          {
-            maximumFractionDigits: 2,
-          }
-        )}배`
-      : "데이터 없음",
+    interestCoverageValue,
     interestCoverageOk === true
       ? "양호"
       : interestCoverageOk === false
         ? "불량"
         : "데이터 없음",
-    "1.0배 이상"
+    "최근 3개 결산연도와 최근분기의 이자보상배율이 모두 1.0배 이상"
   );
 
-  // 7. 최대주주 지분율
+  /* -------------------------------------------------------
+     7. 최대주주
+     ------------------------------------------------------- */
+
   let shareholderOk = null;
 
   if (
@@ -845,19 +1737,16 @@ function judge(
     shareholder.ratio !== null
   ) {
     shareholderOk =
-      shareholder.ratio >= 20.0;
+      shareholder.ratio >=
+      20.0;
   }
 
   addResult(
     "largest_shareholder",
     "대주주 지분율",
-    shareholder &&
-    shareholder.ratio !== null
-      ? `${shareholder.ratio.toLocaleString(
-          "ko-KR",
-          {
-            maximumFractionDigits: 2,
-          }
+    shareholder
+      ? `${formatNumber(
+          shareholder.ratio
         )}%`
       : "데이터 없음",
     shareholderOk === true
@@ -865,11 +1754,15 @@ function judge(
       : shareholderOk === false
         ? "불량"
         : "데이터 없음",
-    "20.0% 이상"
+    "대주주 지분율 ≥ 20.0%"
   );
 
-  const boolValues = [
-    revenueGrowth,
+  /* -------------------------------------------------------
+     점수
+     ------------------------------------------------------- */
+
+  const values = [
+    revenueOk,
     netIncomeOk,
     operatingCFOk,
     investingCFOk,
@@ -879,12 +1772,12 @@ function judge(
   ];
 
   const passed =
-    boolValues.filter(
+    values.filter(
       (v) => v === true
     ).length;
 
   const total =
-    boolValues.filter(
+    values.filter(
       (v) => v !== null
     ).length;
 
@@ -893,7 +1786,12 @@ function judge(
 
     derived: {
       interest_coverage:
-        financials.interestCoverage,
+        latestQuarter?.current
+          ?.interest_coverage ??
+        latestAnnual
+          ?.financials
+          ?.interest_coverage ??
+        null,
 
       largest_shareholder_pct:
         shareholder
@@ -912,9 +1810,10 @@ function judge(
   };
 }
 
-/**
- * 개별 종목 분석
- */
+/* =========================================================
+   개별 기업 분석
+   ========================================================= */
+
 async function analyzeOne(
   stockCode,
   env,
@@ -927,27 +1826,57 @@ async function analyzeOne(
       ctx
     );
 
-  const annual =
-    await fetchAnnual(
+  /*
+   * 최근 3개 결산
+   */
+  const annualReports =
+    await fetchAnnualYears(
       company.corp_code,
       env
     );
 
-  const financials =
-    extractFinancials(
-      annual.items
+  const annuals =
+    annualReports.map(
+      (report) => ({
+        year:
+          report.year,
+
+        fs_div:
+          report.fs_div,
+
+        financials:
+          extractAnnualFinancials(
+            report.items
+          ),
+      })
     );
 
+  /*
+   * 최근 분기
+   */
+  const latestQuarter =
+    await fetchLatestQuarter(
+      company.corp_code,
+      env
+    );
+
+  /*
+   * 최대주주
+   */
   const shareholder =
     await fetchLargestShareholder(
       company.corp_code,
-      annual.year,
+      annuals[0].year,
       env
     );
 
+  /*
+   * 판정
+   */
   const judgement =
     judge(
-      financials,
+      annuals,
+      latestQuarter,
       shareholder
     );
 
@@ -957,30 +1886,49 @@ async function analyzeOne(
     stock_code:
       company.stock_code,
 
-    // ★ 종목명
+    /*
+     * ★ 종목명
+     */
     corp_name:
       company.corp_name,
 
-    // DART 기업코드
     corp_code:
       company.corp_code,
 
-    // 사업보고서 연도
+    /*
+     * 가장 최근 결산연도
+     */
     report_year:
-      annual.year,
+      annuals[0].year,
 
-    // CFS / OFS
-    fs_div:
-      annual.fs_div,
+    /*
+     * 최근 3개 결산
+     */
+    annuals,
 
-    financials,
+    /*
+     * 최근 분기
+     */
+    latest_quarter:
+      latestQuarter,
 
+    /*
+     * 최대주주
+     */
     largest_shareholder:
-      shareholder,
+      shareholder || {
+        name: "-",
+        ratio: null,
+        year: null,
+      },
 
     judgement,
   };
 }
+
+/* =========================================================
+   Worker
+   ========================================================= */
 
 export default {
   async fetch(
@@ -989,10 +1937,9 @@ export default {
     ctx
   ) {
     try {
-      // --------------------------------------------------
-      // DART API KEY 확인
-      // --------------------------------------------------
-
+      /*
+       * API KEY 확인
+       */
       if (!env.DART_API_KEY) {
         return json(
           {
@@ -1005,14 +1952,11 @@ export default {
       }
 
       const url =
-        new URL(
-          request.url
-        );
+        new URL(request.url);
 
-      // --------------------------------------------------
-      // Health check
-      // --------------------------------------------------
-
+      /*
+       * Health
+       */
       if (
         url.pathname ===
         "/health"
@@ -1026,10 +1970,9 @@ export default {
         });
       }
 
-      // --------------------------------------------------
-      // 분석 API
-      // --------------------------------------------------
-
+      /*
+       * 분석
+       */
       if (
         url.pathname ===
           "/api/analyze" &&
@@ -1087,7 +2030,11 @@ export default {
           );
         }
 
-        // 각 종목을 독립적으로 분석
+        /*
+         * 종목별 독립 분석
+         *
+         * 하나가 실패해도 나머지는 계속 진행
+         */
         const results =
           await Promise.all(
             codes.map(
@@ -1137,10 +2084,9 @@ export default {
         });
       }
 
-      // --------------------------------------------------
-      // 그 외 요청은 정적 파일로 전달
-      // --------------------------------------------------
-
+      /*
+       * 정적 파일
+       */
       return env.ASSETS.fetch(
         request
       );
