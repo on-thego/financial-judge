@@ -152,7 +152,8 @@ function render(results){
     h+=`<tr><td><b>${esc(x.corp_name)}</b><br><span class="muted">${x.stock_code}</span></td>`;
     for(const k of ["revenue_growth","net_income","operating_cf","investing_cf","financing_cf"]){const a=by(k);h+=`<td>${a?`<span class="${a.status==="양호"?"good":"bad"}">${a.status}</span>`:"-"}</td>`}
     const ic=by("interest_coverage"), ow=by("largest_shareholder");
-    h+=`<td>${ic.value}</td><td>${ow.value}</td><td><b>${x.judgement.score}/${x.judgement.total}</b></td></tr>`;
+    const missingNote = x.judgement.missing > 0 ? ` <span class="muted small">(데이터 없음 ${x.judgement.missing}개 제외)</span>` : "";
+    h+=`<td>${ic.value}</td><td>${ow.value}</td><td><b>${x.judgement.passed}/${x.judgement.evaluated}</b> 충족${missingNote}</td></tr>`;
   }
   h+="</tbody>";document.getElementById("summary").innerHTML=h;
   const labels=okResults.map(x=>`${x.corp_name} (${x.stock_code})`);
@@ -166,7 +167,7 @@ function render(results){
   scales:{y:{beginAtZero:true,title:{display:true,text:"이자보상배율 (배)"}},y1:{beginAtZero:true,position:"right",grid:{drawOnChartArea:false},title:{display:true,text:"대주주 지분율 (%)"}}}}});
   document.getElementById("details").innerHTML=okResults.map(x=>`
     <details style="margin:10px 0;border:1px solid #edf0f5;border-radius:10px;padding:10px">
-      <summary><b>${esc(x.corp_name)}</b> (${x.stock_code}) — ${x.judgement.score}/${x.judgement.total}</summary>
+      <summary><b>${esc(x.corp_name)}</b> (${x.stock_code}) — ${x.judgement.passed}/${x.judgement.evaluated} 충족${x.judgement.missing > 0 ? ` (데이터 없음 ${x.judgement.missing}개 제외)` : ""}</summary>
       <div style="overflow:auto;margin-top:10px">
         <table><thead><tr><th>항목</th><th>값</th><th>판정</th><th>기준</th></tr></thead><tbody>
         ${x.judgement.results.map(a=>`<tr><td>${a.label}</td><td>${esc(a.value)}</td><td><span class="${a.status==="양호"?"good":"bad"}">${a.status}</span></td><td>${a.rule}</td></tr>`).join("")}
