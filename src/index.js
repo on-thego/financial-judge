@@ -5,15 +5,6 @@ const DART_BASE = "https://opendart.fss.or.kr/api";
 const ANNUAL_REPORT = "11011";
 const CACHE_SECONDS = 21600; // 6 hours
 
-<<<<<<< HEAD
-const DART_FETCH_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-  Accept: "*/*",
-  Referer: "https://opendart.fss.or.kr/",
-};
-
-=======
->>>>>>> parent of f39fcdb (fetch() 호출에 브라우저처럼 보이는 헤더를 추가)
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -42,6 +33,7 @@ function normText(value) {
   return String(value ?? "").replace(/[\s\u00a0]/g, "").toLowerCase();
 }
 
+// 헤더 없이 요청 (롤백 방식)
 async function dartFetch(endpoint, params, env) {
   const url = new URL(`${DART_BASE}/${endpoint}.json`);
   const all = { ...params, crtfc_key: env.DART_API_KEY };
@@ -85,14 +77,24 @@ async function fetchCorpMap(env, ctx) {
     if (/^\d{6}$/.test(stockCode)) {
       map[stockCode] = {
         corp_code: String(item.corp_code ?? "").padStart(8, "0"),
-        corp_name: String(item.corp_name ?? "")
+        corp_name: String(item.corp_name ?? ""),
       };
     }
   }
 
-  const out = json(map);
-  ctx.waitUntil(cache.put(cacheKey, out.clone()));
-  return out.json();
+  const payload = JSON.stringify(map);
+  ctx.waitUntil(
+    cache.put(
+      cacheKey,
+      new Response(payload, {
+        headers: {
+          "content-type": "application/json",
+          "cache-control": `max-age=${CACHE_SECONDS}`,
+        },
+      })
+    )
+  );
+  return map;
 }
 
 async function resolveStock(stockCode, env, ctx) {
@@ -121,7 +123,7 @@ function twoYears(row) {
     latest: cleanNumber(row?.thstrm_amount),
     previous: cleanNumber(row?.frmtrm_amount),
     latest_name: row?.thstrm_nm ?? null,
-    previous_name: row?.frmtrm_nm ?? null
+    previous_name: row?.frmtrm_nm ?? null,
   };
 }
 
@@ -131,7 +133,7 @@ function extractFinancials(items) {
     "당기순이익",
     "당기순이익(손실)",
     "지배기업의소유주에게귀속되는당기순이익",
-    "ProfitLoss"
+    "ProfitLoss",
   ], "IS");
   const opIncome = findAccount(items, ["영업이익", "영업이익(손실)", "OperatingIncomeLoss"], "IS");
   const interest = findAccount(items, ["이자비용", "이자비용(금융원가)", "금융원가", "InterestExpense"], "IS");
@@ -139,17 +141,17 @@ function extractFinancials(items) {
   const opCF = findAccount(items, [
     "영업활동현금흐름",
     "영업활동으로인한현금흐름",
-    "NetCashProvidedByUsedInOperatingActivities"
+    "NetCashProvidedByUsedInOperatingActivities",
   ], "CF");
   const investCF = findAccount(items, [
     "투자활동현금흐름",
     "투자활동으로인한현금흐름",
-    "NetCashProvidedByUsedInInvestingActivities"
+    "NetCashProvidedByUsedInInvestingActivities",
   ], "CF");
   const financeCF = findAccount(items, [
     "재무활동현금흐름",
     "재무활동으로인한현금흐름",
-    "NetCashProvidedByUsedInFinancingActivities"
+    "NetCashProvidedByUsedInFinancingActivities",
   ], "CF");
 
   return {
@@ -159,14 +161,12 @@ function extractFinancials(items) {
     interest_expense: twoYears(interest),
     operating_cf: twoYears(opCF),
     investing_cf: twoYears(investCF),
-    financing_cf: twoYears(financeCF)
+    financing_cf: twoYears(financeCF),
   };
 }
 
 async function fetchAnnual(corpCode, env) {
   const now = new Date();
-  // 2026년 9월 기준 일반적으로 최근 완료 연도는 2025년.
-  // 데이터가 아직 없으면 1년 전까지 한 번 재시도.
   const firstYear = now.getUTCFullYear() - 1;
   for (const year of [firstYear, firstYear - 1]) {
     try {
@@ -174,7 +174,7 @@ async function fetchAnnual(corpCode, env) {
         corp_code: corpCode,
         bsns_year: year,
         reprt_code: ANNUAL_REPORT,
-        fs_div: "CFS"
+        fs_div: "CFS",
       }, env);
       if (Array.isArray(data.list) && data.list.length) {
         return { year, items: data.list };
@@ -190,13 +190,11 @@ async function fetchLargestShareholder(corpCode, year, env) {
       const data = await dartFetch("hyslrSttus", {
         corp_code: corpCode,
         bsns_year: y,
-        reprt_code: ANNUAL_REPORT
+        reprt_code: ANNUAL_REPORT,
       }, env);
       const items = Array.isArray(data.list) ? data.list : [];
       if (!items.length) continue;
 
-      // 최대주주 현황 API의 기말 지분율 중 가장 큰 단일 주주를 "대주주 지분율"로 사용.
-      // 관련인 합산이 필요한 별도 정의를 원할 경우 후속 확장 가능.
       let best = null;
       for (const item of items) {
         const pct = cleanNumber(item.trmend_posesn_stock_qota_rt);
@@ -204,7 +202,7 @@ async function fetchLargestShareholder(corpCode, year, env) {
           best = {
             name: item.nm ?? null,
             relation: item.relate ?? null,
-            pct
+            pct,
           };
         }
       }
@@ -212,7 +210,7 @@ async function fetchLargestShareholder(corpCode, year, env) {
         year: y,
         as_of: items[0].stlm_dt ?? null,
         pct: best?.pct ?? null,
-        holder: best
+        holder: best,
       };
     } catch (_) {}
   }
@@ -243,66 +241,38 @@ function judge(fin, shareholder) {
   const ownership = shareholder.pct;
   const ownershipOk = ownership !== null && ownership >= 20;
 
+  // 판정 결과 배열 (프론트엔드가 기대하는 7개 항목 순서)
   const results = [
-    ["revenue_growth", "매출액 증가", revenueOk, `최근 ${format(fin.revenue.latest)} / 전년 ${format(fin.revenue.previous)}`, "최근년도 매출 > 전년도 매출"],
-    ["net_income", "당기순이익 2개년 연속 적자", netIncomeOk, `최근 ${format(fin.net_income.latest)} / 전년 ${format(fin.net_income.previous)}`, "2개년 연속 음수이면 불량"],
-    ["operating_cf", "영업활동 현금흐름", ocfOk, format(fin.operating_cf.latest), "영업활동 현금흐름 > 0"],
-    ["investing_cf", "투자활동 현금흐름", icfOk, format(fin.investing_cf.latest), "투자활동 현금흐름 < 0"],
-    ["financing_cf", "재무활동 현금흐름", fcfOk, format(fin.financing_cf.latest), "재무활동 현금흐름 < 0"],
-    ["interest_coverage", "이자보상배율", coverageOk, coverage === null ? "데이터 없음" : `${format(coverage)}배`, "영업이익 / 이자비용 ≥ 1.0"],
-    ["largest_shareholder", "대주주 지분율", ownershipOk, ownership === null ? "데이터 없음" : `${format(ownership)}%`, "대주주 지분율 ≥ 20.0%"]
-  ].map(([key, label, ok, value, rule]) => ({
-    key, label, status: ok ? "양호" : "불량", value, rule
-  }));
+    revenueOk,
+    netIncomeOk,
+    ocfOk,
+    icfOk,
+    fcfOk,
+    coverageOk,
+    ownershipOk,
+  ];
 
-  return {
-    results,
-    score: results.filter(x => x.status === "양호").length,
-    total: results.length,
-    derived: {
-      interest_coverage: coverage,
-      largest_shareholder_pct: ownership
-    }
-  };
-}
-
-<<<<<<< HEAD
-function judge(financials, shareholder) {
-  const revenueGrowth = financials.revenue.curr !== null && financials.revenue.prev !== null
-    ? financials.revenue.curr > financials.revenue.prev
-    : null;
-  const netIncomeOk = financials.netIncome.curr !== null ? financials.netIncome.curr >= 0 : null;
-  const operatingCFOk = financials.operatingCF.curr !== null ? financials.operatingCF.curr > 0 : null;
-  const investingCFOk = financials.investingCF.curr !== null ? financials.investingCF.curr < 0 : null;
-  const financingCFOk = financials.financingCF.curr !== null ? financials.financingCF.curr < 0 : null;
-  const interestCoverageOk = financials.interestCoverage !== null ? financials.interestCoverage >= 1.0 : null;
-  const shareholderOk = shareholder ? shareholder.ratio >= 20.0 : null;
-
-  // 판정 기준 순서: 매출, 순이익, 영업CF, 투자CF, 재무CF, 이자보상, 대주주
-  const results = [revenueGrowth, netIncomeOk, operatingCFOk, investingCFOk, financingCFOk, interestCoverageOk, shareholderOk];
   const nonNull = results.filter(v => v !== null);
   const passed = nonNull.filter(v => v === true).length;
   const total = nonNull.length;
   const score = total ? `${passed}/${total}` : "N/A";
 
   return {
-    results,
-    score,
-    passed,
-    total,
-    // 개별 필드는 호환성을 위해 유지 (프론트엔드에서 사용하지 않을 수 있음)
-    revenueGrowth,
+    results,      // ✅ 배열
+    score,        // ✅ "통과/총평가"
+    passed,       // ✅ 통과 건수
+    total,        // ✅ 평가된 전체 항목 수
+    // 개별 필드는 호환성 유지
+    revenueGrowth: revenueOk,
     netIncomeOk,
-    operatingCFOk,
-    investingCFOk,
-    financingCFOk,
-    interestCoverageOk,
-    shareholderOk,
+    operatingCFOk: ocfOk,
+    investingCFOk: icfOk,
+    financingCFOk: fcfOk,
+    interestCoverageOk: coverageOk,
+    shareholderOk: ownershipOk,
   };
 }
 
-=======
->>>>>>> parent of f39fcdb (fetch() 호출에 브라우저처럼 보이는 헤더를 추가)
 function format(v) {
   if (v === null || v === undefined) return "데이터 없음";
   return Number(v).toLocaleString("ko-KR", { maximumFractionDigits: 2 });
@@ -346,7 +316,6 @@ export default {
           return json({ ok: false, message: "분석할 6자리 종목코드를 입력하세요." }, 400);
         }
 
-<<<<<<< HEAD
         const results = await Promise.all(
           codes.map(async (code) => {
             try {
@@ -356,29 +325,17 @@ export default {
             }
           })
         );
-=======
-        const results = [];
-        for (const code of codes) {
-          try {
-            const item = await analyzeOne(code, env, ctx);
-            results.push({ ok: true, ...item });
-          } catch (error) {
-            results.push({ ok: false, stock_code: code, corp_name: code, error: error?.message || String(error) });
-          }
-        }
->>>>>>> parent of f39fcdb (fetch() 호출에 브라우저처럼 보이는 헤더를 추가)
 
         return json({
           ok: true,
           results,
-          analyzed_at: new Date().toISOString()
+          analyzed_at: new Date().toISOString(),
         });
       }
 
-      // 프론트엔드 정적 파일 제공
       return env.ASSETS.fetch(request);
     } catch (error) {
       return json({ ok: false, message: error?.message || String(error) }, 500);
     }
-  }
+  },
 };
