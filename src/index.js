@@ -362,7 +362,6 @@ async function fetchLatestQuarter(corpCode, env) {
   return { current, previous, year: found.current.year, quarter: found.quarter, quarter_name: found.quarter_name };
 }
 
-// 지정 연도에 최대주주 공시가 없으면 1개년 전으로 한 번 더 시도한다.
 async function fetchLargestShareholder(corpCode, year, env) {
   for (const y of [year, year - 1]) {
     try {
@@ -385,7 +384,7 @@ async function fetchLargestShareholder(corpCode, year, env) {
 }
 
 /* =========================================================
-   판정 — "전부 있어야 판정" 대신 "있는 데이터로 최대한 판정"
+   판정
    ========================================================= */
 
 function judge(annuals, latestQuarter, shareholder) {
@@ -394,107 +393,64 @@ function judge(annuals, latestQuarter, shareholder) {
     results.push({ key, label, value, status, rule });
   }
 
-  // 1. 매출액 증가 — 연간 추세를 기본으로 판정, 분기 데이터는 있으면 참고만 (없어도 판정 가능)
-  const annualRevenue = annuals.slice().sort((a, b) => a.year - b.year);
-  const revenueYears = annualRevenue.filter((x) => x.financials.revenue !== null);
-
-  let annualRevenueIncreasing = null;
-  if (revenueYears.length >= 2) {
-    annualRevenueIncreasing = revenueYears
-      .slice(1)
-      .every((x, i) => x.financials.revenue > revenueYears[i].financials.revenue);
-  }
-
-  let quarterRevenueIncreasing = null;
-  if (latestQuarter?.current && latestQuarter?.previous && latestQuarter.current.revenue !== null && latestQuarter.previous.revenue !== null) {
-    quarterRevenueIncreasing = latestQuarter.current.revenue > latestQuarter.previous.revenue;
-  }
-
-  // 분기 데이터가 있으면 연간+분기 모두 증가해야 양호, 분기 데이터가 없으면 연간 추세만으로 판정
-  let revenueOk = null;
-  if (annualRevenueIncreasing !== null) {
-    revenueOk = quarterRevenueIncreasing === null ? annualRevenueIncreasing : annualRevenueIncreasing && quarterRevenueIncreasing;
-  }
-
-  let revenueValue = "데이터 없음";
-  if (annualRevenueIncreasing !== null) {
-    const trend = revenueYears.map((x) => `${x.year} ${formatNumber(x.financials.revenue)}`).join(" → ");
-    const quarterNote = quarterRevenueIncreasing === null ? " (분기 데이터 없음)" : ` / 최근분기 전년동기 ${quarterRevenueIncreasing ? "증가" : "감소"}`;
-    revenueValue = `${trend}${quarterNote}`;
-  }
-
-  addResult("revenue_growth", "매출액 증가", revenueValue, revenueOk === true ? "양호" : revenueOk === false ? "불량" : "데이터 없음", "결산연도 매출액이 연속 증가 (분기 데이터가 있으면 전년동기 대비 증가도 함께 확인)");
-
-  // 2. 당기순이익 연속 적자 — 값이 있는 기간만으로 연속 적자 여부 판정
-  const profitPeriods = [];
-  for (const annual of annuals) {
-    if (annual.financials.net_income !== null) {
-      profitPeriods.push({ type: "annual", year: annual.year, quarter: null, value: annual.financials.net_income });
-    }
-  }
-  if (latestQuarter?.current?.net_income !== null && latestQuarter?.current?.net_income !== undefined) {
-    profitPeriods.push({ type: "quarter", year: latestQuarter.year, quarter: latestQuarter.quarter, value: latestQuarter.current.net_income });
-  }
-
-  let netIncomeOk = null;
-  if (profitPeriods.length > 0) {
-    let consecutiveLoss = 0;
-    let hasConsecutiveLoss = false;
-    for (const p of profitPeriods) {
-      if (p.value < 0) {
-        consecutiveLoss++;
-        if (consecutiveLoss >= 2) hasConsecutiveLoss = true;
-      } else {
-        consecutiveLoss = 0;
-      }
-    }
-    netIncomeOk = !hasConsecutiveLoss;
-  }
-
-  let netIncomeValue = "데이터 없음";
-  if (profitPeriods.length > 0) {
-    netIncomeValue = profitPeriods.map((p) => (p.type === "annual" ? `${p.year}년 ${formatNumber(p.value)}` : `${p.year} Q${p.quarter} ${formatNumber(p.value)}`)).join(" / ");
-  }
-
-  addResult("net_income", "당기순이익 연속 적자", netIncomeValue, netIncomeOk === true ? "양호" : netIncomeOk === false ? "불량" : "데이터 없음", "확보된 결산·분기 데이터 중 2개 기간 연속 적자가 없어야 함");
-
-  // 3~5. CF (기존과 동일 — 최근 결산연도 1개년만 사용)
   const latestAnnual = annuals[0];
 
+  // 1. 매출액 증가 — 최근분기 vs 전년동기만 비교
+  let revenueOk = null;
+  let revenueValue = "데이터 없음";
+  if (
+    latestQuarter?.current?.revenue !== null && latestQuarter?.current?.revenue !== undefined &&
+    latestQuarter?.previous?.revenue !== null && latestQuarter?.previous?.revenue !== undefined
+  ) {
+    revenueOk = latestQuarter.current.revenue > latestQuarter.previous.revenue;
+    revenueValue = `${latestQuarter.year} Q${latestQuarter.quarter} ${formatNumber(latestQuarter.current.revenue)} vs 전년동기 ${formatNumber(latestQuarter.previous.revenue)}`;
+  }
+  addResult("revenue_growth", "매출액 증가", revenueValue, revenueOk === true ? "양호" : revenueOk === false ? "불량" : "데이터 없음", "최근분기 매출액 > 전년동기 매출액");
+
+  // 2. 순이익 연속 적자 — 최근 3개년 중 한 해라도 흑자면 양호
+  let netIncomeOk = null;
+  let netIncomeValue = "데이터 없음";
+  const netIncomeYears = annuals.filter((x) => x.financials.net_income !== null);
+  if (netIncomeYears.length > 0) {
+    const allLoss = netIncomeYears.every((x) => x.financials.net_income < 0);
+    netIncomeOk = !allLoss;
+    netIncomeValue = netIncomeYears.map((x) => `${x.year}년 ${formatNumber(x.financials.net_income)}`).join(" / ");
+  }
+  addResult("net_income", "당기순이익 연속 적자", netIncomeValue, netIncomeOk === true ? "양호" : netIncomeOk === false ? "불량" : "데이터 없음", "확보된 최근 결산연도 중 한 해라도 흑자면 양호 (전부 적자일 때만 불량)");
+
+  // 3. 영업활동 CF
   let operatingCFOk = null;
   if (latestAnnual?.financials.operating_cf !== null) operatingCFOk = latestAnnual.financials.operating_cf > 0;
   addResult("operating_cf", "영업활동 현금흐름", latestAnnual?.financials.operating_cf !== null ? formatNumber(latestAnnual.financials.operating_cf) : "데이터 없음", operatingCFOk === true ? "양호" : operatingCFOk === false ? "불량" : "데이터 없음", "최근 결산 영업활동 현금흐름 > 0");
 
+  // 4. 투자활동 CF
   let investingCFOk = null;
   if (latestAnnual?.financials.investing_cf !== null) investingCFOk = latestAnnual.financials.investing_cf < 0;
   addResult("investing_cf", "투자활동 현금흐름", latestAnnual?.financials.investing_cf !== null ? formatNumber(latestAnnual.financials.investing_cf) : "데이터 없음", investingCFOk === true ? "양호" : investingCFOk === false ? "불량" : "데이터 없음", "최근 결산 투자활동 현금흐름 < 0");
 
+  // 5. 재무활동 CF
   let financingCFOk = null;
   if (latestAnnual?.financials.financing_cf !== null) financingCFOk = latestAnnual.financials.financing_cf < 0;
   addResult("financing_cf", "재무활동 현금흐름", latestAnnual?.financials.financing_cf !== null ? formatNumber(latestAnnual.financials.financing_cf) : "데이터 없음", financingCFOk === true ? "양호" : financingCFOk === false ? "불량" : "데이터 없음", "최근 결산 재무활동 현금흐름 < 0");
 
-  // 6. 이자보상배율 — 확보된 기간 중 하나라도 있으면 그것들만으로 판정
-  const coveragePeriods = [];
-  for (const annual of annuals) {
-    if (annual.financials.interest_coverage !== null) {
-      coveragePeriods.push({ label: `${annual.year}년`, value: annual.financials.interest_coverage });
-    }
-  }
-  if (latestQuarter?.current?.interest_coverage !== null && latestQuarter?.current?.interest_coverage !== undefined) {
-    coveragePeriods.push({ label: `${latestQuarter.year} Q${latestQuarter.quarter}`, value: latestQuarter.current.interest_coverage });
-  }
+  // 6. 이자보상배율 — 분기 → 최근년도 → 이전년도 순으로 값이 있는 첫 시점 사용
+  const coverageCandidates = [
+    latestQuarter?.current?.interest_coverage != null
+      ? { label: `${latestQuarter.year} Q${latestQuarter.quarter}`, value: latestQuarter.current.interest_coverage }
+      : null,
+    ...annuals.map((a) => (a.financials.interest_coverage !== null ? { label: `${a.year}년`, value: a.financials.interest_coverage } : null)),
+  ].filter(Boolean);
+
+  const interestCoverageSource = coverageCandidates[0] || null;
 
   let interestCoverageOk = null;
-  if (coveragePeriods.length > 0) {
-    interestCoverageOk = coveragePeriods.every((x) => Number(x.value) >= 1.0);
-  }
-
   let interestCoverageValue = "데이터 없음";
-  if (coveragePeriods.length > 0) {
-    interestCoverageValue = coveragePeriods.map((x) => `${x.label} ${formatNumber(x.value)}배`).join(" / ");
+  if (interestCoverageSource) {
+    interestCoverageOk = interestCoverageSource.value >= 1.0;
+    interestCoverageValue = `${interestCoverageSource.label} ${formatNumber(interestCoverageSource.value)}배`;
   }
 
-  addResult("interest_coverage", "이자보상배율", interestCoverageValue, interestCoverageOk === true ? "양호" : interestCoverageOk === false ? "불량" : "데이터 없음", "확보된 결산·분기 기간의 이자보상배율이 모두 1.0배 이상");
+  addResult("interest_coverage", "이자보상배율", interestCoverageValue, interestCoverageOk === true ? "양호" : interestCoverageOk === false ? "불량" : "데이터 없음", "가장 최근 시점(분기 → 최근년도 → 이전년도 순) 이자보상배율 ≥ 1.0배");
 
   // 7. 대주주 지분율
   let shareholderOk = null;
@@ -509,7 +465,7 @@ function judge(annuals, latestQuarter, shareholder) {
   return {
     results,
     derived: {
-      interest_coverage: latestQuarter?.current?.interest_coverage ?? latestAnnual?.financials?.interest_coverage ?? null,
+      interest_coverage: interestCoverageSource?.value ?? null,
       largest_shareholder_pct: shareholder ? shareholder.ratio : null,
     },
     passed,
