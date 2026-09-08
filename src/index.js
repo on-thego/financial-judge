@@ -33,38 +33,27 @@ function normText(value) {
   return String(value ?? "").replace(/[\s\u00a0]/g, "").toLowerCase();
 }
 
-// ========== 개선된 dartFetch ==========
-// - 리다이렉트를 수동 처리하여 무한 루프 방지
-// - Content-Type이 JSON인지 확인
-// - HTTP 상태 및 DART API status 코드 검증
+// JSON API 전용 - 리다이렉트 및 Content-Type 검증
 async function dartFetch(endpoint, params, env) {
   const url = new URL(`${DART_BASE}/${endpoint}.json`);
   const all = { ...params, crtfc_key: env.DART_API_KEY };
   Object.entries(all).forEach(([k, v]) => url.searchParams.set(k, v));
 
-  // 리다이렉트를 수동으로 처리 (3xx 응답을 오류로 간주)
   const response = await fetch(url.toString(), { redirect: "manual" });
 
-  // 리다이렉트 응답 감지
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("location") || "알 수 없음";
     throw new Error(`DART 리다이렉트 발생 (${response.status}): ${location}`);
   }
-
-  // HTTP 오류
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`DART HTTP ${response.status}: ${text.substring(0, 200)}`);
   }
-
-  // Content-Type 검증
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("application/json")) {
     const text = await response.text();
     throw new Error(`DART non-JSON 응답 (${contentType}): ${text.substring(0, 200)}`);
   }
-
-  // JSON 파싱
   const data = await response.json();
   if (String(data.status) !== "000") {
     throw new Error(`DART ${data.status}: ${data.message || "API 오류"}`);
@@ -72,6 +61,9 @@ async function dartFetch(endpoint, params, env) {
   return data;
 }
 
+// ========== 수정된 fetchCorpMap ==========
+// - redirect: "manual" 적용
+// - HTML(error1.html) 응답을 감지하여 명확한 오류 메시지 반환
 async function fetchCorpMap(env, ctx) {
   const cache = caches.default;
   const cacheKey = new Request("https://financial-judge.local/_corp_code_map");
@@ -80,11 +72,36 @@ async function fetchCorpMap(env, ctx) {
 
   const url = new URL(`${DART_BASE}/corpCode.xml`);
   url.searchParams.set("crtfc_key", env.DART_API_KEY);
-  const response = await fetch(url.toString());
-  if (!response.ok) throw new Error(`corpCode HTTP ${response.status}`);
+
+  // 리다이렉트를 수동으로 처리하여 무한 루프 방지
+  const response = await fetch(url.toString(), { redirect: "manual" });
+
+  // 리다이렉트 감지
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get("location") || "알 수 없음";
+    throw new Error(`DART corpCode 리다이렉트 (${response.status}): ${location}`);
+  }
+
+  // HTTP 오류
+  if (!response.ok) {
+    throw new Error(`corpCode HTTP ${response.status}`);
+  }
+
+  // Content-Type이 HTML인 경우 -> 인증키 오류 또는 잘못된 요청
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("text/html")) {
+    // error1.html 등이 반환된 경우
+    throw new Error(
+      "DART 인증키 오류 또는 잘못된 요청으로 HTML 페이지가 반환되었습니다. API 키를 다시 확인해주세요."
+    );
+  }
+
+  // ZIP 파일 처리 (XML 포함)
   const buf = new Uint8Array(await response.arrayBuffer());
   const files = unzipSync(buf);
-  const xmlEntry = Object.entries(files).find(([name]) => name.toLowerCase().endsWith(".xml"));
+  const xmlEntry = Object.entries(files).find(([name]) =>
+    name.toLowerCase().endsWith(".xml")
+  );
   if (!xmlEntry) throw new Error("DART 기업코드 XML을 찾지 못했습니다.");
 
   const xml = strFromU8(xmlEntry[1]);
@@ -330,7 +347,7 @@ function judge(fin, shareholder) {
   const ownership = shareholder.pct;
   const ownershipOk = ownership !== null && ownership >= 20;
 
-  // 프론트엔드가 기대하는 7개 항목 순서: 매출, 순이익, 영업CF, 투자CF, 재무CF, 이자보상, 대주주
+  // 프론트엔드가 기대하는 7개 항목 순서
   const results = [
     revenueOk,
     netIncomeOk,
@@ -347,11 +364,10 @@ function judge(fin, shareholder) {
   const score = total ? `${passed}/${total}` : "N/A";
 
   return {
-    results, // 배열
-    score, // "통과/총평가"
-    passed, // 통과 건수
-    total, // 평가된 전체 항목 수
-    // 개별 필드는 호환성 유지
+    results,
+    score,
+    passed,
+    total,
     revenueGrowth: revenueOk,
     netIncomeOk,
     operatingCFOk: ocfOk,
