@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>재무건전성 분석</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+:root{font-family:Inter,"Noto Sans KR",sans-serif;color:#152033;background:#f5f7fb}
+*{box-sizing:border-box}body{margin:0}.wrap{max-width:1220px;margin:auto;padding:28px 18px 50px}
+.card{background:#fff;border-radius:18px;box-shadow:0 8px 32px rgba(20,32,55,.08);padding:20px;margin-bottom:18px}
+h1,h2,h3{margin-top:0}.muted{color:#758096}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+input{border:1px solid #d7deea;border-radius:10px;padding:11px 13px;font-size:15px}
+#code{width:160px;letter-spacing:2px}.wide{flex:1;min-width:280px}
+button{border:0;border-radius:10px;padding:11px 16px;background:#182230;color:white;font-weight:700;cursor:pointer}
+button.secondary{background:#eef2f7;color:#182230}.danger{color:#ad2626}.small{font-size:12px}
+.list{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.chip{display:flex;gap:8px;align-items:center;padding:7px 10px;border-radius:999px;background:#eef2f7}
+.chip button{background:transparent;color:#778198;padding:0;font-size:16px}
+table{width:100%;border-collapse:collapse}th,td{padding:11px 8px;border-bottom:1px solid #edf0f5;font-size:13px}
+th{text-align:left;color:#718096}.center{text-align:center}.right{text-align:right}
+.good{color:#18713b;background:#dff4e5;padding:4px 8px;border-radius:999px;font-weight:800;display:inline-block}
+.bad{color:#b32222;background:#ffe0e0;padding:4px 8px;border-radius:999px;font-weight:800;display:inline-block}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.chart{height:430px}.hidden{display:none}.error{background:#fff0f0;border:1px solid #ffd2d2;padding:12px;border-radius:10px;color:#9b2020;margin-top:12px}
+.loading{padding:12px;background:#fff8db;border:1px solid #f0df9e;border-radius:10px;color:#786000}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>기업 재무건전성 분석</h1>
+  <p class="muted">종목코드만 입력하면 OpenDART 공시를 조회하고 7개 항목을 자동 판정합니다.</p>
+
+  <section class="card">
+    <h2>분석 대상</h2>
+    <div class="row">
+      <input id="code" inputmode="numeric" maxlength="6" placeholder="005930">
+      <button onclick="addCode()">추가</button>
+      <button class="secondary" onclick="document.getElementById('file').click()">Excel / CSV / TXT 불러오기</button>
+      <input id="file" type="file" accept=".xlsx,.xls,.csv,.txt" hidden onchange="loadFile(event)">
+      <button class="secondary" onclick="downloadCsv()">현재 목록 CSV 저장</button>
+    </div>
+    <div class="small muted" style="margin-top:8px">최대 10개 종목. 예: 005930, 000660, 035420</div>
+    <div id="list" class="list"></div>
+    <div class="row">
+      <button id="analyzeBtn" onclick="analyze()">🚀 전체 분석</button>
+      <button class="secondary" onclick="clearCodes()">전체 삭제</button>
+    </div>
+    <div id="status" class="loading hidden"></div>
+    <div id="error" class="error hidden"></div>
+  </section>
+
+  <div id="output" class="hidden">
+    <section class="card">
+      <h2>종합 결과</h2>
+      <div style="overflow:auto">
+        <table id="summary"></table>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <h2>이자보상배율 · 대주주 지분율</h2>
+        <div class="chart"><canvas id="comparisonChart"></canvas></div>
+      </section>
+      <section class="card">
+        <h2>판정 기준</h2>
+        <table>
+          <tr><th>항목</th><th>기준</th></tr>
+          <tr><td>매출액 증가</td><td>최근년도 > 전년도</td></tr>
+          <tr><td>순이익 연속 적자</td><td>최근 2개년 모두 음수면 불량</td></tr>
+          <tr><td>영업활동 CF</td><td>&gt; 0</td></tr>
+          <tr><td>투자활동 CF</td><td>&lt; 0</td></tr>
+          <tr><td>재무활동 CF</td><td>&lt; 0</td></tr>
+          <tr><td>이자보상배율</td><td>≥ 1.0배</td></tr>
+          <tr><td>대주주 지분율</td><td>≥ 20.0%</td></tr>
+        </table>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>기업별 상세 판정</h2>
+      <div id="details"></div>
+    </section>
+  </div>
+</div>
+
+<script>
+const KEY = "financialJudgeStockCodes";
+let codes = JSON.parse(localStorage.getItem(KEY) || "[]");
+let chart = null;
+
+function saveCodes(){localStorage.setItem(KEY, JSON.stringify(codes)); renderCodes();}
+function norm(v){return String(v||"").replace(/\D/g,"").padStart(6,"0");}
+function addCode(){
+  const v=norm(document.getElementById("code").value);
+  if(!/^\d{6}$/.test(v)) return alert("6자리 숫자를 입력하세요.");
+  if(codes.includes(v)) return alert("이미 목록에 있습니다.");
+  if(codes.length>=10) return alert("최대 10개까지 가능합니다.");
+  codes.push(v); document.getElementById("code").value=""; saveCodes();
+}
+function removeCode(c){codes=codes.filter(x=>x!==c);saveCodes();}
+function clearCodes(){codes=[];saveCodes();document.getElementById("output").classList.add("hidden");}
+function renderCodes(){
+  const el=document.getElementById("list");
+  el.innerHTML=codes.length?codes.map(c=>`<div class="chip">${c}<button onclick="removeCode('${c}')">×</button></div>`).join(""):'<span class="muted">아직 종목이 없습니다.</span>';
+}
+async function loadFile(e){
+  const file=e.target.files[0]; if(!file)return;
+  try{
+    const ext=file.name.toLowerCase().split(".").pop();
+    let values=[];
+    if(ext==="txt"){
+      values=(await file.text()).split(/[\s,;]+/).map(norm).filter(x=>/^\d{6}$/.test(x));
+    }else if(ext==="csv"){
+      values=(await file.text()).split(/[\s,;,\r\n]+/).map(norm).filter(x=>/^\d{6}$/.test(x));
+    }else{
+      const buf=await file.arrayBuffer();
+      const wb=XLSX.read(buf,{type:"array"});
+      const sheet=wb.Sheets[wb.SheetNames[0]];
+      const rows=XLSX.utils.sheet_to_json(sheet,{header:1,raw:true});
+      values=rows.flat().map(norm).filter(x=>/^\d{6}$/.test(x));
+    }
+    codes=[...new Set(values)].slice(0,10);saveCodes();
+    alert(`${codes.length}개 종목을 불러왔습니다.`);
+  }catch(err){alert("파일을 읽지 못했습니다: "+err.message)}
+  e.target.value="";
+}
+function downloadCsv(){
+  const csv="종목코드\\n"+codes.join("\\n");
+  const blob=new Blob(["\\ufeff"+csv],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="분석종목목록.csv";a.click();
+}
+function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));}
+async function analyze(){
+  if(!codes.length)return alert("분석할 종목을 먼저 추가하세요.");
+  const btn=document.getElementById("analyzeBtn"), status=document.getElementById("status"), err=document.getElementById("error");
+  btn.disabled=true;status.classList.remove("hidden");err.classList.add("hidden");status.textContent=`${codes.length}개 종목을 분석하고 있습니다...`;
+  try{
+    const r=await fetch("/api/analyze",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({stock_codes:codes})});
+    const data=await r.json(); if(!data.ok)throw new Error(data.message||"분석 실패");
+    render(data.results);document.getElementById("output").classList.remove("hidden");
+  }catch(e){err.textContent=e.message;err.classList.remove("hidden")}
+  finally{btn.disabled=false;status.classList.add("hidden")}
+}
+function render(results){
+  const okResults=results.filter(x=>x.ok);
+  let h=`<thead><tr><th>기업</th><th>매출</th><th>순익</th><th>영업CF</th><th>투자CF</th><th>재무CF</th><th>이자보상</th><th>대주주</th><th>점수</th></tr></thead><tbody>`;
+  for(const x of results){
+    if(!x.ok){h+=`<tr><td>${esc(x.stock_code)}</td><td colspan="8" class="danger">${esc(x.error)}</td></tr>`;continue;}
+    const r=x.judgement.results, by=k=>r.find(a=>a.key===k);
+    h+=`<tr><td><b>${esc(x.corp_name)}</b><br><span class="muted">${x.stock_code}</span></td>`;
+    for(const k of ["revenue_growth","net_income","operating_cf","investing_cf","financing_cf"]){const a=by(k);h+=`<td>${a?`<span class="${a.status==="양호"?"good":"bad"}">${a.status}</span>`:"-"}</td>`}
+    const ic=by("interest_coverage"), ow=by("largest_shareholder");
+    h+=`<td>${ic.value}</td><td>${ow.value}</td><td><b>${x.judgement.score}/${x.judgement.total}</b></td></tr>`;
+  }
+  h+="</tbody>";document.getElementById("summary").innerHTML=h;
+  const labels=okResults.map(x=>`${x.corp_name} (${x.stock_code})`);
+  const cov=okResults.map(x=>x.judgement.derived.interest_coverage);
+  const owner=okResults.map(x=>x.judgement.derived.largest_shareholder_pct);
+  if(chart)chart.destroy();
+  chart=new Chart(document.getElementById("comparisonChart"),{type:"bar",data:{labels,datasets:[
+    {label:"이자보상배율 (배)",data:cov,yAxisID:"y"},
+    {label:"대주주 지분율 (%)",data:owner,yAxisID:"y1"}
+  ]},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:"index",intersect:false},
+  scales:{y:{beginAtZero:true,title:{display:true,text:"이자보상배율 (배)"}},y1:{beginAtZero:true,position:"right",grid:{drawOnChartArea:false},title:{display:true,text:"대주주 지분율 (%)"}}}}});
+  document.getElementById("details").innerHTML=okResults.map(x=>`
+    <details style="margin:10px 0;border:1px solid #edf0f5;border-radius:10px;padding:10px">
+      <summary><b>${esc(x.corp_name)}</b> (${x.stock_code}) — ${x.judgement.score}/${x.judgement.total}</summary>
+      <div style="overflow:auto;margin-top:10px">
+        <table><thead><tr><th>항목</th><th>값</th><th>판정</th><th>기준</th></tr></thead><tbody>
+        ${x.judgement.results.map(a=>`<tr><td>${a.label}</td><td>${esc(a.value)}</td><td><span class="${a.status==="양호"?"good":"bad"}">${a.status}</span></td><td>${a.rule}</td></tr>`).join("")}
+        </tbody></table>
+      </div>
+      <div class="small muted" style="margin-top:8px">사업보고서: ${x.report_year}년 / 최대주주 정보: ${x.largest_shareholder.year??"없음"}년</div>
+    </details>`).join("");
+}
+document.getElementById("code").addEventListener("keydown",e=>{if(e.key==="Enter")addCode()});
+renderCodes();
+</script>
+</body>
+</html>

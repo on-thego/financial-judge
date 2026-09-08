@@ -1,0 +1,16 @@
+{
+  "name": "financial-judge",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.2.5",
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "wrangler": "^4.36.0"
+  }
+}
