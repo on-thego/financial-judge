@@ -1,15 +1,12 @@
 import { unzipSync, strFromU8 } from "fflate";
+import { XMLParser } from "fast-xml-parser";
 
 const DART_BASE = "https://opendart.fss.or.kr/api";
 const ANNUAL_REPORT = "11011";
 const CACHE_SECONDS = 21600; // 6 hours
 
-// OpenDART가 User-Agent 없는 요청(서버리스/봇 트래픽)을 감지해
-// 리다이렉트 루프(error1.html)로 응답하는 경우가 있어, 브라우저처럼 보이는
-// 헤더를 붙여서 요청한다.
 const DART_FETCH_HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
   Accept: "*/*",
   Referer: "https://opendart.fss.or.kr/",
 };
@@ -71,57 +68,46 @@ async function fetchCorpMap(env, ctx) {
   if (!xmlEntry) throw new Error("DART 기업코드 XML을 찾지 못했습니다.");
 
   const xml = strFromU8(xmlEntry[1]);
+  const parser = new XMLParser({ ignoreAttributes: true });
+  const parsed = parser.parse(xml);
+  const list = Array.isArray(parsed?.result?.list)
+    ? parsed.result.list
+    : parsed?.result?.list
+      ? [parsed.result.list]
+      : [];
 
-  // fast-xml-parser로 전체 DOM 트리(약 10만+ 항목)를 만드는 방식은
-  // Workers CPU 시간 제한(특히 Free 플랜 10ms)을 초과하기 쉬우므로,
-  // <list>...</list> 블록을 문자열로 직접 스캔해서 필요한 3개 필드만 뽑아낸다.
   const map = {};
-  const getTag = (block, tag) => {
-    const start = block.indexOf(`<${tag}>`);
-    if (start === -1) return "";
-    const end = block.indexOf(`</${tag}>`, start);
-    if (end === -1) return "";
-    return block.slice(start + tag.length + 2, end).trim();
-  };
-
-  let pos = 0;
-  while (true) {
-    const listStart = xml.indexOf("<list>", pos);
-    if (listStart === -1) break;
-    const listEnd = xml.indexOf("</list>", listStart);
-    if (listEnd === -1) break;
-    const block = xml.slice(listStart, listEnd);
-    pos = listEnd + 7;
-
-    const stockCode = getTag(block, "stock_code").padStart(6, "0");
-    if (stockCode.length === 6 && stockCode !== "000000") {
-      map[stockCode] = {
-        corp_code: getTag(block, "corp_code").padStart(8, "0"),
-        corp_name: getTag(block, "corp_name"),
+  for (const item of list) {
+    const stockCode = String(item.stock_code ?? "").trim();
+    if (stockCode && stockCode !== "") {
+      map[normalizeCode(stockCode)] = {
+        corp_code: String(item.corp_code ?? "").trim(),
+        corp_name: String(item.corp_name ?? "").trim(),
       };
     }
   }
 
-  const out = json(map);
-  ctx.waitUntil(cache.put(cacheKey, out.clone()));
-  return out.json();
+  const payload = JSON.stringify(map);
+  ctx.waitUntil(
+    cache.put(
+      cacheKey,
+      new Response(payload, {
+        headers: {
+          "content-type": "application/json",
+          "cache-control": `max-age=${CACHE_SECONDS}`,
+        },
+      })
+    )
+  );
+  return map;
 }
 
 async function resolveStock(stockCode, env, ctx) {
   const map = await fetchCorpMap(env, ctx);
-  const company = map[stockCode];
-  if (!company) throw new Error(`${stockCode} 종목코드를 DART에서 찾지 못했습니다.`);
-  return { stock_code: stockCode, ...company };
-}
-
-function findAccount(items, patterns, sjDiv) {
-  const pats = patterns.map(normText);
-  const rows = sjDiv ? items.filter(x => x.sj_div === sjDiv) : items;
-  for (const row of rows) {
-    const name = normText(row.account_nm);
-    if (pats.some(p => name === p || name.includes(p))) return row;
-  }
-  return null;
+  const code = normalizeCode(stockCode);
+  const info = map[code];
+  if (!info) throw new Error(`종목코드 ${code}에 해당하는 기업을 DART에서 찾을 수 없습니다.`);
+  return { stock_code: code, ...info };
 }
 
 async function fetchAnnual(corpCode, env) {
@@ -138,6 +124,7 @@ async function fetchAnnual(corpCode, env) {
       }, env);
       if (data?.list?.length) return { year, items: data.list };
     } catch (e) {
+      // try CFS -> OFS fallback, then older year
       try {
         const data = await dartFetch("fnlttSinglAcntAll", {
           corp_code: corpCode,
@@ -215,31 +202,37 @@ function extractFinancials(items) {
 }
 
 function judge(financials, shareholder) {
-  const results = {};
+  const revenueGrowth = financials.revenue.curr !== null && financials.revenue.prev !== null
+    ? financials.revenue.curr > financials.revenue.prev
+    : null;
+  const netIncomeOk = financials.netIncome.curr !== null ? financials.netIncome.curr >= 0 : null;
+  const operatingCFOk = financials.operatingCF.curr !== null ? financials.operatingCF.curr > 0 : null;
+  const investingCFOk = financials.investingCF.curr !== null ? financials.investingCF.curr < 0 : null;
+  const financingCFOk = financials.financingCF.curr !== null ? financials.financingCF.curr < 0 : null;
+  const interestCoverageOk = financials.interestCoverage !== null ? financials.interestCoverage >= 1.0 : null;
+  const shareholderOk = shareholder ? shareholder.ratio >= 20.0 : null;
 
-  results.revenueGrowth =
-    financials.revenue.curr !== null && financials.revenue.prev !== null
-      ? financials.revenue.curr > financials.revenue.prev
-      : null;
+  // 판정 기준 순서: 매출, 순이익, 영업CF, 투자CF, 재무CF, 이자보상, 대주주
+  const results = [revenueGrowth, netIncomeOk, operatingCFOk, investingCFOk, financingCFOk, interestCoverageOk, shareholderOk];
+  const nonNull = results.filter(v => v !== null);
+  const passed = nonNull.filter(v => v === true).length;
+  const total = nonNull.length;
+  const score = total ? `${passed}/${total}` : "N/A";
 
-  results.netIncomeOk = financials.netIncome.curr !== null ? financials.netIncome.curr >= 0 : null;
-
-  results.operatingCFOk = financials.operatingCF.curr !== null ? financials.operatingCF.curr > 0 : null;
-
-  results.investingCFOk = financials.investingCF.curr !== null ? financials.investingCF.curr < 0 : null;
-
-  results.financingCFOk = financials.financingCF.curr !== null ? financials.financingCF.curr < 0 : null;
-
-  results.interestCoverageOk =
-    financials.interestCoverage !== null ? financials.interestCoverage >= 1.0 : null;
-
-  results.shareholderOk = shareholder ? shareholder.ratio >= 20.0 : null;
-
-  const values = Object.values(results);
-  const passed = values.filter((v) => v === true).length;
-  const total = values.filter((v) => v !== null).length;
-
-  return { ...results, score: total ? `${passed}/${total}` : "N/A" };
+  return {
+    results,
+    score,
+    passed,
+    total,
+    // 개별 필드는 호환성을 위해 유지 (프론트엔드에서 사용하지 않을 수 있음)
+    revenueGrowth,
+    netIncomeOk,
+    operatingCFOk,
+    investingCFOk,
+    financingCFOk,
+    interestCoverageOk,
+    shareholderOk,
+  };
 }
 
 function format(v) {
@@ -252,12 +245,14 @@ async function analyzeOne(stockCode, env, ctx) {
   const annual = await fetchAnnual(company.corp_code, env);
   const financials = extractFinancials(annual.items);
   const shareholder = await fetchLargestShareholder(company.corp_code, annual.year, env);
+  const judgement = judge(financials, shareholder);
   return {
+    ok: true,
     ...company,
     report_year: annual.year,
     financials,
     largest_shareholder: shareholder,
-    judgement: judge(financials, shareholder)
+    judgement,
   };
 }
 
@@ -288,7 +283,7 @@ export default {
             try {
               return await analyzeOne(code, env, ctx);
             } catch (e) {
-              return { stock_code: code, error: e.message || String(e) };
+              return { ok: false, stock_code: code, error: e.message || String(e) };
             }
           })
         );
