@@ -81,22 +81,41 @@ async function fetchCorpMap(env, ctx) {
 
   const map = {};
   for (const item of list) {
+<<<<<<< HEAD
     const stockCode = String(item.stock_code ?? "").trim().padStart(6, "0");
     if (/^\d{6}$/.test(stockCode)) {
       map[stockCode] = {
         corp_code: String(item.corp_code ?? "").padStart(8, "0"),
         corp_name: String(item.corp_name ?? "")
+=======
+    const stockCode = String(item.stock_code ?? "").trim();
+    if (stockCode && stockCode !== "") {
+      map[normalizeCode(stockCode)] = {
+        corp_code: String(item.corp_code ?? "").trim(),
+        corp_name: String(item.corp_name ?? "").trim(),
+>>>>>>> parent of 3b07597 (Refactor XML parsing and stock code handling)
       };
     }
   }
 
-  const out = json(map);
-  ctx.waitUntil(cache.put(cacheKey, out.clone()));
-  return out.json();
+  const payload = JSON.stringify(map);
+  ctx.waitUntil(
+    cache.put(
+      cacheKey,
+      new Response(payload, {
+        headers: {
+          "content-type": "application/json",
+          "cache-control": `max-age=${CACHE_SECONDS}`,
+        },
+      })
+    )
+  );
+  return map;
 }
 
 async function resolveStock(stockCode, env, ctx) {
   const map = await fetchCorpMap(env, ctx);
+<<<<<<< HEAD
   const company = map[stockCode];
   if (!company) throw new Error(`${stockCode} 종목코드를 DART에서 찾지 못했습니다.`);
   return { stock_code: stockCode, ...company };
@@ -114,6 +133,12 @@ function findAccount(items, patterns, sjDiv) {
     if (pats.some(p => hay.includes(p))) return row;
   }
   return null;
+=======
+  const code = normalizeCode(stockCode);
+  const info = map[code];
+  if (!info) throw new Error(`종목코드 ${code}에 해당하는 기업을 DART에서 찾을 수 없습니다.`);
+  return { stock_code: code, ...info };
+>>>>>>> parent of 3b07597 (Refactor XML parsing and stock code handling)
 }
 
 function twoYears(row) {
@@ -176,8 +201,24 @@ async function fetchAnnual(corpCode, env) {
         reprt_code: ANNUAL_REPORT,
         fs_div: "CFS"
       }, env);
+<<<<<<< HEAD
       if (Array.isArray(data.list) && data.list.length) {
         return { year, items: data.list };
+=======
+      if (data?.list?.length) return { year, items: data.list };
+    } catch (e) {
+      // try CFS -> OFS fallback, then older year
+      try {
+        const data = await dartFetch("fnlttSinglAcntAll", {
+          corp_code: corpCode,
+          bsns_year: String(year),
+          reprt_code: ANNUAL_REPORT,
+          fs_div: "OFS",
+        }, env);
+        if (data?.list?.length) return { year, items: data.list };
+      } catch (e2) {
+        continue;
+>>>>>>> parent of 3b07597 (Refactor XML parsing and stock code handling)
       }
     } catch (_) {}
   }
