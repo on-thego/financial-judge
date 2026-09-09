@@ -11,6 +11,10 @@ const DART_FETCH_HEADERS = {
   Referer: "https://opendart.fss.or.kr/",
 };
 
+/* =========================================================
+   기본 유틸
+   ========================================================= */
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -36,10 +40,14 @@ function cleanNumber(value) {
     .trim()
     .replaceAll(",", "");
 
-  if (!s || ["-", "–", "—", "N/A", "nan"].includes(s)) {
+  if (
+    !s ||
+    ["-", "–", "—", "N/A", "nan"].includes(s)
+  ) {
     return null;
   }
 
+  // (1,234) 형태를 -1234로 변환
   if (/^\(.*\)$/.test(s)) {
     s = "-" + s.slice(1, -1);
   }
@@ -63,7 +71,7 @@ function formatNumber(value) {
     value === undefined ||
     !Number.isFinite(Number(value))
   ) {
-    return "데이터 없음";
+    return "자료없음";
   }
 
   return Number(value).toLocaleString("ko-KR", {
@@ -85,6 +93,10 @@ function formatPercent(value) {
   return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
 }
 
+/* =========================================================
+   DART API
+   ========================================================= */
+
 async function dartFetch(endpoint, params, env) {
   if (!env.DART_API_KEY) {
     throw new Error(
@@ -92,30 +104,44 @@ async function dartFetch(endpoint, params, env) {
     );
   }
 
-  const url = new URL(`${DART_BASE}/${endpoint}.json`);
+  const url = new URL(
+    `${DART_BASE}/${endpoint}.json`
+  );
 
   const allParams = {
     ...params,
     crtfc_key: env.DART_API_KEY,
   };
 
-  Object.entries(allParams).forEach(([key, value]) => {
-    url.searchParams.set(key, String(value));
-  });
+  Object.entries(allParams).forEach(
+    ([key, value]) => {
+      url.searchParams.set(
+        key,
+        String(value)
+      );
+    }
+  );
 
-  const response = await fetch(url.toString(), {
-    headers: DART_FETCH_HEADERS,
-  });
+  const response = await fetch(
+    url.toString(),
+    {
+      headers: DART_FETCH_HEADERS,
+    }
+  );
 
   if (!response.ok) {
-    throw new Error(`DART HTTP ${response.status}`);
+    throw new Error(
+      `DART HTTP ${response.status}`
+    );
   }
 
   const data = await response.json();
 
   if (String(data.status) !== "000") {
     throw new Error(
-      `DART ${data.status}: ${data.message || "API 오류"}`
+      `DART ${data.status}: ${
+        data.message || "API 오류"
+      }`
     );
   }
 
@@ -123,7 +149,7 @@ async function dartFetch(endpoint, params, env) {
 }
 
 /* =========================================================
-   기업코드
+   종목코드 → DART 기업정보
    ========================================================= */
 
 async function fetchCorpMap(env, ctx) {
@@ -133,22 +159,28 @@ async function fetchCorpMap(env, ctx) {
     "https://financial-judge.local/_corp_code_map"
   );
 
-  const cached = await cache.match(cacheKey);
+  const cached =
+    await cache.match(cacheKey);
 
   if (cached) {
     return cached.json();
   }
 
-  const url = new URL(`${DART_BASE}/corpCode.xml`);
+  const url = new URL(
+    `${DART_BASE}/corpCode.xml`
+  );
 
   url.searchParams.set(
     "crtfc_key",
     env.DART_API_KEY
   );
 
-  const response = await fetch(url.toString(), {
-    headers: DART_FETCH_HEADERS,
-  });
+  const response = await fetch(
+    url.toString(),
+    {
+      headers: DART_FETCH_HEADERS,
+    }
+  );
 
   if (!response.ok) {
     throw new Error(
@@ -170,10 +202,13 @@ async function fetchCorpMap(env, ctx) {
     );
   }
 
-  const xmlEntry = Object.entries(files).find(
-    ([name]) =>
-      name.toLowerCase().endsWith(".xml")
-  );
+  const xmlEntry =
+    Object.entries(files).find(
+      ([name]) =>
+        name
+          .toLowerCase()
+          .endsWith(".xml")
+    );
 
   if (!xmlEntry) {
     throw new Error(
@@ -181,23 +216,29 @@ async function fetchCorpMap(env, ctx) {
     );
   }
 
-  const xml = strFromU8(xmlEntry[1]);
+  const xml =
+    strFromU8(xmlEntry[1]);
 
   const map = {};
 
-  function getTag(block, tag) {
-    const start = block.indexOf(
-      `<${tag}>`
-    );
+  function getTag(
+    block,
+    tag
+  ) {
+    const start =
+      block.indexOf(
+        `<${tag}>`
+      );
 
     if (start === -1) {
       return "";
     }
 
-    const end = block.indexOf(
-      `</${tag}>`,
-      start
-    );
+    const end =
+      block.indexOf(
+        `</${tag}>`,
+        start
+      );
 
     if (end === -1) {
       return "";
@@ -214,49 +255,56 @@ async function fetchCorpMap(env, ctx) {
   let pos = 0;
 
   while (true) {
-    const listStart = xml.indexOf(
-      "<list>",
-      pos
-    );
+    const listStart =
+      xml.indexOf(
+        "<list>",
+        pos
+      );
 
     if (listStart === -1) {
       break;
     }
 
-    const listEnd = xml.indexOf(
-      "</list>",
-      listStart
-    );
+    const listEnd =
+      xml.indexOf(
+        "</list>",
+        listStart
+      );
 
     if (listEnd === -1) {
       break;
     }
 
-    const block = xml.slice(
-      listStart,
-      listEnd
-    );
+    const block =
+      xml.slice(
+        listStart,
+        listEnd
+      );
 
-    pos = listEnd + 7;
+    pos =
+      listEnd + 7;
 
-    const stockCode = getTag(
-      block,
-      "stock_code"
-    )
-      .trim()
-      .padStart(6, "0");
+    const stockCode =
+      getTag(
+        block,
+        "stock_code"
+      )
+        .trim()
+        .padStart(6, "0");
 
-    const corpCode = getTag(
-      block,
-      "corp_code"
-    )
-      .trim()
-      .padStart(8, "0");
+    const corpCode =
+      getTag(
+        block,
+        "corp_code"
+      )
+        .trim()
+        .padStart(8, "0");
 
-    const corpName = getTag(
-      block,
-      "corp_name"
-    ).trim();
+    const corpName =
+      getTag(
+        block,
+        "corp_name"
+      ).trim();
 
     if (
       /^\d{6}$/.test(stockCode) &&
@@ -275,14 +323,18 @@ async function fetchCorpMap(env, ctx) {
     JSON.stringify(map);
 
   const cacheResponse =
-    new Response(payload, {
-      headers: {
-        "content-type":
-          "application/json; charset=utf-8",
-        "cache-control":
-          `max-age=${CACHE_SECONDS}`,
-      },
-    });
+    new Response(
+      payload,
+      {
+        headers: {
+          "content-type":
+            "application/json; charset=utf-8",
+
+          "cache-control":
+            `max-age=${CACHE_SECONDS}`,
+        },
+      }
+    );
 
   ctx.waitUntil(
     cache.put(
@@ -304,7 +356,8 @@ async function resolveStock(
   const map =
     await corpMapPromise;
 
-  const company = map[code];
+  const company =
+    map[code];
 
   if (!company) {
     throw new Error(
@@ -336,28 +389,32 @@ function findAccount(
   let rows = items;
 
   /*
-   * DART 자료에 따라 손익계산서가
-   * IS 또는 CIS로 들어오는 경우를 모두 허용
+   * 손익계산서:
+   * IS 또는 CIS 모두 허용
    */
-  if (sjDiv) {
-    if (sjDiv === "IS") {
-      rows = items.filter(
+  if (sjDiv === "IS") {
+    rows =
+      items.filter(
         (x) =>
           x.sj_div === "IS" ||
           x.sj_div === "CIS"
       );
-    } else {
-      rows = items.filter(
+  } else if (sjDiv) {
+    rows =
+      items.filter(
         (x) =>
           x.sj_div === sjDiv
       );
-    }
   }
 
-  // 정확히 일치하는 항목 우선
+  /*
+   * 1차: 정확히 일치
+   */
   for (const row of rows) {
     const name =
-      normText(row.account_nm);
+      normText(
+        row.account_nm
+      );
 
     if (
       pats.some(
@@ -368,15 +425,74 @@ function findAccount(
     }
   }
 
-  // 포함 검색
+  /*
+   * 2차: 포함
+   */
   for (const row of rows) {
     const name =
-      normText(row.account_nm);
+      normText(
+        row.account_nm
+      );
 
     if (
       pats.some(
         (p) =>
           name.includes(p)
+      )
+    ) {
+      return row;
+    }
+  }
+
+  return null;
+}
+
+/*
+ * 이자비용은 일반 금융비용 전체가 아니라
+ * "이자비용" 계정 자체를 최대한 우선해서 찾는다.
+ */
+function findInterestExpense(
+  items
+) {
+  const direct =
+    findAccount(
+      items,
+      [
+        "이자비용",
+        "이자비용(금융원가)",
+        "이자비용(이자비용)",
+      ],
+      "IS"
+    );
+
+  if (direct) {
+    return direct;
+  }
+
+  /*
+   * 계정명이 약간 다른 경우
+   * "이자비용"이 포함되어 있고
+   * "이자수익"은 아닌 항목을 찾는다.
+   */
+  const rows =
+    items.filter(
+      (x) =>
+        x.sj_div === "IS" ||
+        x.sj_div === "CIS"
+    );
+
+  for (const row of rows) {
+    const name =
+      normText(
+        row.account_nm
+      );
+
+    if (
+      name.includes(
+        "이자비용"
+      ) &&
+      !name.includes(
+        "이자수익"
       )
     ) {
       return row;
@@ -399,6 +515,10 @@ function getAmount(
   );
 }
 
+/* =========================================================
+   재무제표 API
+   ========================================================= */
+
 async function fetchFinancialStatement(
   corpCode,
   year,
@@ -411,7 +531,8 @@ async function fetchFinancialStatement(
     {
       corp_code: corpCode,
       bsns_year: String(year),
-      reprt_code: reportCode,
+      reprt_code:
+        reportCode,
       fs_div: fsDiv,
     },
     env
@@ -419,7 +540,7 @@ async function fetchFinancialStatement(
 }
 
 /* =========================================================
-   최근 3개 결산연도 자동 탐색
+   최근 3개 결산연도
    ========================================================= */
 
 async function fetchAnnualYears(
@@ -432,26 +553,23 @@ async function fetchAnnualYears(
   const found = [];
 
   /*
-   * 현재 연도는 아직 사업보고서가 없을 수 있으므로
-   * 전년도부터 과거로 검색한다.
-   *
-   * 2026년 실행:
-   * 2025 → 2024 → 2023
-   *
-   * 2027년 실행:
-   * 2026 → 2025 → 2024
-   *
-   * 실제 사업보고서가 존재하는 연도만 채택한다.
+   * 현재연도는 사업보고서가 아직 없을 수 있으므로
+   * 전년도부터 최대 10년까지 과거로 내려가며
+   * 실제 사업보고서 3개를 찾는다.
    */
   for (
-    let year = currentYear - 1;
-    year >= currentYear - 10;
+    let year =
+      currentYear - 1;
+    year >=
+      currentYear - 10;
     year--
   ) {
     let data = null;
     let fsDiv = "CFS";
 
-    // 연결재무제표
+    /*
+     * 연결재무제표
+     */
     try {
       data =
         await fetchFinancialStatement(
@@ -471,7 +589,9 @@ async function fetchAnnualYears(
       data = null;
     }
 
-    // 연결이 없으면 별도재무제표
+    /*
+     * 연결이 없으면 별도재무제표
+     */
     if (!data) {
       try {
         data =
@@ -519,14 +639,15 @@ async function fetchAnnualYears(
   }
 
   found.sort(
-    (a, b) => b.year - a.year
+    (a, b) =>
+      b.year - a.year
   );
 
   return found;
 }
 
 /* =========================================================
-   결산 재무 데이터 추출
+   결산 재무 데이터
    ========================================================= */
 
 function extractAnnualFinancials(
@@ -539,6 +660,7 @@ function extractAnnualFinancials(
         "매출액",
         "수익(매출액)",
         "영업수익",
+        "매출",
       ],
       "IS"
     );
@@ -585,14 +707,8 @@ function extractAnnualFinancials(
     );
 
   const interestExpense =
-    findAccount(
-      items,
-      [
-        "이자비용",
-        "이자비용(금융원가)",
-        "이자비용(이자비용)",
-      ],
-      "IS"
+    findInterestExpense(
+      items
     );
 
   const operatingIncome =
@@ -605,66 +721,82 @@ function extractAnnualFinancials(
       "IS"
     );
 
-  const current = (row) =>
+  const revenueValue =
     getAmount(
-      row,
+      revenue,
       "thstrm_amount"
     );
 
-  const previous = (row) =>
+  const previousRevenue =
     getAmount(
-      row,
+      revenue,
       "frmtrm_amount"
     );
 
-  const revenueValue =
-    current(revenue);
-
   const netIncomeValue =
-    current(netIncome);
+    getAmount(
+      netIncome,
+      "thstrm_amount"
+    );
+
+  const previousNetIncome =
+    getAmount(
+      netIncome,
+      "frmtrm_amount"
+    );
 
   const operatingCFValue =
-    current(operatingCF);
+    getAmount(
+      operatingCF,
+      "thstrm_amount"
+    );
 
   const investingCFValue =
-    current(investingCF);
+    getAmount(
+      investingCF,
+      "thstrm_amount"
+    );
 
   const financingCFValue =
-    current(financingCF);
+    getAmount(
+      financingCF,
+      "thstrm_amount"
+    );
 
   const interestValue =
-    current(interestExpense);
+    getAmount(
+      interestExpense,
+      "thstrm_amount"
+    );
 
   const operatingIncomeValue =
-    current(operatingIncome);
+    getAmount(
+      operatingIncome,
+      "thstrm_amount"
+    );
 
-  let interestCoverage =
-    null;
-
-  if (
-    operatingIncomeValue !==
-      null &&
-    interestValue !==
-      null &&
-    interestValue !== 0
-  ) {
-    interestCoverage =
-      operatingIncomeValue /
-      Math.abs(interestValue);
-  }
+  /*
+   * 이자보상배율 =
+   * 영업이익 / 이자비용
+   */
+  const interestCoverage =
+    calculateInterestCoverage(
+      operatingIncomeValue,
+      interestValue
+    );
 
   return {
     revenue:
       revenueValue,
 
     previous_revenue:
-      previous(revenue),
+      previousRevenue,
 
     net_income:
       netIncomeValue,
 
     previous_net_income:
-      previous(netIncome),
+      previousNetIncome,
 
     operating_cf:
       operatingCFValue,
@@ -687,7 +819,7 @@ function extractAnnualFinancials(
 }
 
 /* =========================================================
-   분기 / 반기 보고서
+   분기 보고서
    ========================================================= */
 
 const QUARTER_REPORTS = [
@@ -723,7 +855,10 @@ async function tryQuarterData(
             ? "OFS"
             : "CFS",
         ]
-      : ["CFS", "OFS"];
+      : [
+          "CFS",
+          "OFS",
+        ];
 
   for (
     const fsDiv of fsDivs
@@ -750,7 +885,7 @@ async function tryQuarterData(
         };
       }
     } catch (e) {
-      // 다음 구분으로 시도
+      // 다음 재무제표 유형 시도
     }
   }
 
@@ -758,7 +893,7 @@ async function tryQuarterData(
 }
 
 /* =========================================================
-   가장 최근 분기 찾기
+   최근 실제 분기 자동 탐색
    ========================================================= */
 
 async function fetchQuarterReport(
@@ -769,15 +904,16 @@ async function fetchQuarterReport(
     new Date().getFullYear();
 
   /*
-   * 현재연도부터 과거로 내려가며
-   *
+   * 현재연도:
    * 3분기 → 2분기 → 1분기
    *
-   * 순으로 가장 최신의 실제 보고서를 찾는다.
+   * 없으면 전년도 같은 순서
    */
   for (
-    let year = currentYear;
-    year >= currentYear - 2;
+    let year =
+      currentYear;
+    year >=
+      currentYear - 2;
     year--
   ) {
     for (
@@ -797,7 +933,7 @@ async function fetchQuarterReport(
       }
 
       /*
-       * 전년동기 보고서
+       * 동일한 분기의 전년 보고서
        */
       const previous =
         await tryQuarterData(
@@ -855,6 +991,31 @@ function getStatementValue(
   };
 }
 
+function getInterestStatementValue(
+  items
+) {
+  const row =
+    findInterestExpense(
+      items
+    );
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    current:
+      cleanNumber(
+        row.thstrm_amount
+      ),
+
+    previous:
+      cleanNumber(
+        row.frmtrm_amount
+      ),
+  };
+}
+
 function extractQuarterCumulative(
   report
 ) {
@@ -872,6 +1033,7 @@ function extractQuarterCumulative(
         "매출액",
         "수익(매출액)",
         "영업수익",
+        "매출",
       ],
       "IS"
     );
@@ -898,14 +1060,8 @@ function extractQuarterCumulative(
     );
 
   const interestExpense =
-    getStatementValue(
-      items,
-      [
-        "이자비용",
-        "이자비용(금융원가)",
-        "이자비용(이자비용)",
-      ],
-      "IS"
+    getInterestStatementValue(
+      items
     );
 
   return {
@@ -928,7 +1084,7 @@ function extractQuarterCumulative(
 }
 
 /* =========================================================
-   누적값 차감
+   계산
    ========================================================= */
 
 function subtractValues(
@@ -963,12 +1119,14 @@ function calculateInterestCoverage(
 
   return (
     operatingIncome /
-    Math.abs(interestExpense)
+    Math.abs(
+      interestExpense
+    )
   );
 }
 
 /* =========================================================
-   실제 분기 데이터 계산
+   실제 분기값 계산
    ========================================================= */
 
 async function buildQuarterData(
@@ -988,10 +1146,12 @@ async function buildQuarterData(
   }
 
   /*
-   * Q1:
-   * 1분기 누적값 = 실제 Q1 값
+   * Q1
+   * 누적값 자체가 Q1
    */
-  if (quarter === 1) {
+  if (
+    quarter === 1
+  ) {
     return {
       year,
       quarter,
@@ -1017,10 +1177,13 @@ async function buildQuarterData(
   }
 
   /*
-   * Q2:
-   * 상반기 누적 - Q1 누적
+   * Q2
+   *
+   * 상반기 누적 - 1분기 누적
    */
-  if (quarter === 2) {
+  if (
+    quarter === 2
+  ) {
     const q1 =
       await tryQuarterData(
         corpCode,
@@ -1098,10 +1261,13 @@ async function buildQuarterData(
   }
 
   /*
-   * Q3:
+   * Q3
+   *
    * 3분기 누적 - 상반기 누적
    */
-  if (quarter === 3) {
+  if (
+    quarter === 3
+  ) {
     const h1 =
       await tryQuarterData(
         corpCode,
@@ -1210,7 +1376,9 @@ async function fetchLatestQuarter(
 
   let previous = null;
 
-  if (found.previous) {
+  if (
+    found.previous
+  ) {
     previous =
       await buildQuarterData(
         corpCode,
@@ -1282,7 +1450,9 @@ async function fetchLargestShareholder(
             row.trmend_posesn_stock_qota_rt
           );
 
-        if (ratio === null) {
+        if (
+          ratio === null
+        ) {
           continue;
         }
 
@@ -1307,7 +1477,7 @@ async function fetchLargestShareholder(
         return best;
       }
     } catch (e) {
-      // 다음 연도로 계속
+      // 이전 결산연도로 재시도
     }
   }
 
@@ -1354,17 +1524,11 @@ function judge(
 
   /* =======================================================
      1. 매출액 증가
-     
-     조건:
-     ① 최근 3개 결산연도 매출액이 매년 증가
-     ② 최근분기 매출액이 전년동기보다 증가
-
-     두 조건을 모두 만족해야 양호
      ======================================================= */
 
-  let annualRevenueOk =
-    null;
-
+  /*
+   * 최근 3개 결산연도
+   */
   const annualRevenueReady =
     sortedAnnuals.length === 3 &&
     sortedAnnuals.every(
@@ -1373,7 +1537,12 @@ function judge(
         null
     );
 
-  if (annualRevenueReady) {
+  let annualRevenueOk =
+    false;
+
+  if (
+    annualRevenueReady
+  ) {
     annualRevenueOk =
       sortedAnnuals[0]
         .financials.revenue <
@@ -1385,8 +1554,11 @@ function judge(
           .financials.revenue;
   }
 
+  /*
+   * 최근분기 vs 전년동기
+   */
   let quarterRevenueOk =
-    null;
+    false;
 
   let quarterGrowthRate =
     null;
@@ -1420,19 +1592,18 @@ function judge(
       100;
   }
 
-  let revenueOk =
-    null;
+  /*
+   * 두 조건을 모두 만족해야 양호.
+   * 자료가 부족하면 최종적으로 불량 취급.
+   */
+  const revenueOk =
+    annualRevenueReady &&
+    quarterGrowthRate !== null &&
+    annualRevenueOk &&
+    quarterRevenueOk;
 
-  if (
-    annualRevenueOk !==
-      null &&
-    quarterRevenueOk !==
-      null
-  ) {
-    revenueOk =
-      annualRevenueOk &&
-      quarterRevenueOk;
-  }
+  let revenueValue =
+    "자료없음";
 
   const annualRevenueText =
     annualRevenueReady
@@ -1478,39 +1649,36 @@ function judge(
         `${latestQuarter.year} Q${latestQuarter.quarter} ` +
         `${formatNumber(
           latestQuarter.current.revenue
-        )} (전년동기 자료없음)`;
+        )} ` +
+        `(전년동기 자료없음)`;
     }
   }
 
-  const revenueValue =
+  revenueValue =
     `${annualRevenueText} / ${quarterRevenueText}`;
 
   addResult(
     "revenue_growth",
     "매출액 증가",
     revenueValue,
-    revenueOk === true
+    revenueOk
       ? "양호"
-      : revenueOk === false
-        ? "불량"
-        : "자료없음",
+      : quarterGrowthRate === null ||
+        !annualRevenueReady
+        ? "자료없음"
+        : "불량",
     "최근 3개 결산연도 매출액이 연속 증가하고 최근분기 매출액이 전년동기 대비 증가"
   );
 
   /* =======================================================
      2. 당기순이익 연속 적자
-
-     최근 3개 결산연도 데이터가 모두 있어야 판정.
-
-     3개년:
-       흑자 / 적자 / 적자 -> 불량
-       적자 / 적자 / 흑자 -> 불량
-       적자 / 흑자 / 적자 -> 양호
-       흑자 / 적자 / 흑자 -> 양호
-
-     최근분기 순이익은 참고값으로 함께 표시하지만
-     기본 판정에는 사용하지 않는다.
      ======================================================= */
+
+  /*
+   * 사용자 요구:
+   * 최근 3개 결산연도 데이터를 모두 확보한 경우에만
+   * 연속 적자를 분석한다.
+   */
 
   const annualNetIncomeReady =
     sortedAnnuals.length === 3 &&
@@ -1521,9 +1689,14 @@ function judge(
     );
 
   let netIncomeOk =
-    null;
+    false;
 
-  if (annualNetIncomeReady) {
+  let netIncomeValue =
+    "최근 3개 결산연도 자료없음";
+
+  if (
+    annualNetIncomeReady
+  ) {
     let consecutiveLoss =
       0;
 
@@ -1553,12 +1726,7 @@ function judge(
 
     netIncomeOk =
       !hasConsecutiveLoss;
-  }
 
-  let netIncomeValue =
-    "최근 3개 결산연도 자료없음";
-
-  if (annualNetIncomeReady) {
     netIncomeValue =
       sortedAnnuals
         .map(
@@ -1569,6 +1737,10 @@ function judge(
         )
         .join(" / ");
 
+    /*
+     * 최근분기는 참고값으로 표시.
+     * 기본 판정 자체는 최근 3개 결산 기준.
+     */
     if (
       latestQuarter?.current?.net_income !==
         null &&
@@ -1587,11 +1759,11 @@ function judge(
     "net_income",
     "당기순이익 연속 적자",
     netIncomeValue,
-    netIncomeOk === true
-      ? "양호"
-      : netIncomeOk === false
-        ? "불량"
-        : "자료없음",
+    !annualNetIncomeReady
+      ? "자료없음"
+      : netIncomeOk
+        ? "양호"
+        : "불량",
     "최근 3개 결산연도 데이터를 모두 확보하고 연속 2개년 이상 적자가 아니어야 함"
   );
 
@@ -1600,14 +1772,14 @@ function judge(
      ======================================================= */
 
   let operatingCFOk =
-    null;
+    false;
 
   if (
     latestAnnual?.financials
-      .operating_cf !==
+      ?.operating_cf !==
       null &&
     latestAnnual?.financials
-      .operating_cf !==
+      ?.operating_cf !==
       undefined
   ) {
     operatingCFOk =
@@ -1619,19 +1791,22 @@ function judge(
     "operating_cf",
     "영업활동 현금흐름",
     latestAnnual?.financials
-      .operating_cf !== null &&
+      ?.operating_cf !== null &&
     latestAnnual?.financials
-      .operating_cf !== undefined
+      ?.operating_cf !== undefined
       ? formatNumber(
           latestAnnual.financials
             .operating_cf
         )
-      : "데이터 없음",
-    operatingCFOk === true
-      ? "양호"
-      : operatingCFOk === false
-        ? "불량"
-        : "자료없음",
+      : "자료없음",
+    latestAnnual?.financials
+      ?.operating_cf === null ||
+    latestAnnual?.financials
+      ?.operating_cf === undefined
+      ? "자료없음"
+      : operatingCFOk
+        ? "양호"
+        : "불량",
     "최근 결산 영업활동 현금흐름 > 0"
   );
 
@@ -1640,14 +1815,14 @@ function judge(
      ======================================================= */
 
   let investingCFOk =
-    null;
+    false;
 
   if (
     latestAnnual?.financials
-      .investing_cf !==
+      ?.investing_cf !==
       null &&
     latestAnnual?.financials
-      .investing_cf !==
+      ?.investing_cf !==
       undefined
   ) {
     investingCFOk =
@@ -1659,19 +1834,22 @@ function judge(
     "investing_cf",
     "투자활동 현금흐름",
     latestAnnual?.financials
-      .investing_cf !== null &&
+      ?.investing_cf !== null &&
     latestAnnual?.financials
-      .investing_cf !== undefined
+      ?.investing_cf !== undefined
       ? formatNumber(
           latestAnnual.financials
             .investing_cf
         )
-      : "데이터 없음",
-    investingCFOk === true
-      ? "양호"
-      : investingCFOk === false
-        ? "불량"
-        : "자료없음",
+      : "자료없음",
+    latestAnnual?.financials
+      ?.investing_cf === null ||
+    latestAnnual?.financials
+      ?.investing_cf === undefined
+      ? "자료없음"
+      : investingCFOk
+        ? "양호"
+        : "불량",
     "최근 결산 투자활동 현금흐름 < 0"
   );
 
@@ -1680,14 +1858,14 @@ function judge(
      ======================================================= */
 
   let financingCFOk =
-    null;
+    false;
 
   if (
     latestAnnual?.financials
-      .financing_cf !==
+      ?.financing_cf !==
       null &&
     latestAnnual?.financials
-      .financing_cf !==
+      ?.financing_cf !==
       undefined
   ) {
     financingCFOk =
@@ -1699,46 +1877,37 @@ function judge(
     "financing_cf",
     "재무활동 현금흐름",
     latestAnnual?.financials
-      .financing_cf !== null &&
+      ?.financing_cf !== null &&
     latestAnnual?.financials
-      .financing_cf !== undefined
+      ?.financing_cf !== undefined
       ? formatNumber(
           latestAnnual.financials
             .financing_cf
         )
-      : "데이터 없음",
-    financingCFOk === true
-      ? "양호"
-      : financingCFOk === false
-        ? "불량"
-        : "자료없음",
+      : "자료없음",
+    latestAnnual?.financials
+      ?.financing_cf === null ||
+    latestAnnual?.financials
+      ?.financing_cf === undefined
+      ? "자료없음"
+      : financingCFOk
+        ? "양호"
+        : "불량",
     "최근 결산 재무활동 현금흐름 < 0"
   );
 
   /* =======================================================
      6. 이자보상배율
-
-     검사 기간:
-       최근 3개 결산연도
-       + 최근분기
-
-     총 4개
-
-     양호:
-       4개 모두 데이터 존재
-       AND
-       4개 모두 > 1.0
-
-     자료없음:
-       하나라도 데이터 없음
-
-     위험:
-       데이터는 모두 있지만
-       하나라도 <= 1.0
-
-     ※ 최신 요청에 따라
-       1.0은 위험,
-       양호는 1.0 초과로 적용
+     
+     최근 3개 결산 + 최근분기
+     
+     계산:
+       영업이익 / 이자비용
+     
+     판정:
+       하나라도 자료없음 → 자료없음 + 불량
+       하나라도 <= 1 → 위험 + 불량
+       4개 모두 > 1 → 양호
      ======================================================= */
 
   const coveragePeriods =
@@ -1751,9 +1920,18 @@ function judge(
     coveragePeriods.push({
       label:
         `${annual.year}년`,
+
       value:
         annual.financials
           .interest_coverage,
+
+      operating_income:
+        annual.financials
+          .operating_income,
+
+      interest_expense:
+        annual.financials
+          .interest_expense,
     });
   }
 
@@ -1767,6 +1945,14 @@ function judge(
       value:
         latestQuarter.current
           .interest_coverage,
+
+      operating_income:
+        latestQuarter.current
+          .operating_income,
+
+      interest_expense:
+        latestQuarter.current
+          .interest_expense,
     });
   }
 
@@ -1792,30 +1978,34 @@ function judge(
         Number(x.value) <= 1
     );
 
-  let interestCoverageOk =
-    false;
-
   let interestCoverageStatus =
     "자료없음";
 
-  if (coverageMissing) {
-    interestCoverageOk =
-      false;
+  let interestCoverageOk =
+    false;
 
+  if (
+    coverageMissing
+  ) {
     interestCoverageStatus =
       "자료없음";
-  } else if (coverageDanger) {
+
     interestCoverageOk =
       false;
-
+  } else if (
+    coverageDanger
+  ) {
     interestCoverageStatus =
       "위험";
-  } else {
-    interestCoverageOk =
-      true;
 
+    interestCoverageOk =
+      false;
+  } else {
     interestCoverageStatus =
       "양호";
+
+    interestCoverageOk =
+      true;
   }
 
   const coverageDetail =
@@ -1837,40 +2027,23 @@ function judge(
       })
       .join(" / ");
 
-  let interestCoverageValue =
-    coverageDetail;
-
-  if (
-    interestCoverageStatus ===
-    "위험"
-  ) {
-    interestCoverageValue =
-      `위험 - ${coverageDetail}`;
-  }
-
-  if (
-    interestCoverageStatus ===
-    "자료없음"
-  ) {
-    interestCoverageValue =
-      `자료없음 - ${coverageDetail}`;
-  }
-
   addResult(
     "interest_coverage",
     "이자보상배율",
-    interestCoverageValue ||
-      "자료없음",
+    coverageDetail,
     interestCoverageStatus,
-    "최근 3개 결산연도와 최근분기 모두 데이터가 존재하고 모두 1배 초과"
+    "최근 3개 결산연도와 최근분기 모두 영업이익÷이자비용이 계산되고 모두 1배 초과"
   );
 
   /* =======================================================
-     7. 최대주주 지분율
+     7. 최대주주
      ======================================================= */
 
   let shareholderOk =
-    null;
+    false;
+
+  let shareholderStatus =
+    "자료없음";
 
   if (
     shareholder &&
@@ -1879,6 +2052,11 @@ function judge(
   ) {
     shareholderOk =
       shareholder.ratio >= 20;
+
+    shareholderStatus =
+      shareholderOk
+        ? "양호"
+        : "불량";
   }
 
   addResult(
@@ -1888,29 +2066,18 @@ function judge(
       ? `${formatNumber(
           shareholder.ratio
         )}%`
-      : "데이터 없음",
-    shareholderOk === true
-      ? "양호"
-      : shareholderOk === false
-        ? "불량"
-        : "자료없음",
+      : "자료없음",
+    shareholderStatus,
     "대주주 지분율 ≥ 20.0%"
   );
 
   /* =======================================================
      점수
-
+     
      항상 7개 기준.
-
-     데이터가 없거나 위험/불량이면
-     통과하지 못한 것으로 계산한다.
-
-     예:
-       5개 양호
-       1개 불량
-       1개 자료없음
-
-       → 5/7
+     
+     자료없음/불량/위험 = 0점
+     양호 = 1점
      ======================================================= */
 
   const values = [
@@ -1929,8 +2096,10 @@ function judge(
     ).length;
 
   const missingCount =
-    values.filter(
-      (v) => v === null
+    results.filter(
+      (x) =>
+        x.status ===
+        "자료없음"
     ).length;
 
   return {
@@ -1938,8 +2107,7 @@ function judge(
 
     derived: {
       /*
-       * 차트에는 가장 최근분기의
-       * 이자보상배율을 사용
+       * 차트에는 가장 최근분기의 이자보상배율 사용
        */
       interest_coverage:
         latestQuarter?.current
@@ -1952,13 +2120,13 @@ function judge(
           : null,
 
       /*
-       * 최근분기 매출액 증가율
+       * 최근분기 매출 증감률
        */
       revenue_growth_rate:
         quarterGrowthRate,
 
       /*
-       * 이자보상배율 전체 기간
+       * 이자보상배율 4개 기간
        */
       interest_coverage_periods:
         coveragePeriods,
@@ -1967,19 +2135,16 @@ function judge(
     passed,
 
     /*
-     * 현재 HTML에서는
-     * passed/evaluated를 표시하므로
-     * 항상 7개 기준으로 한다.
+     * 항상 7개 기준
      */
     evaluated: 7,
 
     /*
-     * 실제 데이터 없음 개수.
+     * 현재 index.html은 이 값이 0보다 크면
+     * "제외"라고 표시하므로
+     * 화면상 혼란을 피하기 위해 0으로 유지한다.
      *
-     * 현재 HTML은 이 값을
-     * "제외"로 표시하는 부분이 있어
-     * 화면상 혼동을 피하기 위해
-     * 별도 필드에 저장한다.
+     * 실제 누락 개수는 missing_count에 저장.
      */
     missing: 0,
 
@@ -1988,12 +2153,13 @@ function judge(
 
     total_criteria: 7,
 
-    score: `${passed}/7`,
+    score:
+      `${passed}/7`,
   };
 }
 
 /* =========================================================
-   개별 기업 분석
+   개별 종목 분석
    ========================================================= */
 
 async function analyzeOne(
@@ -2034,7 +2200,7 @@ async function analyzeOne(
     );
 
   /*
-   * 최근분기 + 전년동기
+   * 최근분기
    */
   const latestQuarter =
     await fetchLatestQuarter(
@@ -2053,7 +2219,7 @@ async function analyzeOne(
     );
 
   /*
-   * 최종 판정
+   * 판정
    */
   const judgement =
     judge(
@@ -2084,18 +2250,18 @@ async function analyzeOne(
       company.corp_code,
 
     /*
-     * 가장 최근 결산연도
+     * 최근 결산연도
      */
     report_year:
       annuals[0].year,
 
     /*
-     * 최근 3개 결산자료
+     * 최근 3개 결산
      */
     annuals,
 
     /*
-     * 최근 분기자료
+     * 최근분기 + 전년동기
      */
     latest_quarter:
       latestQuarter,
@@ -2111,14 +2277,14 @@ async function analyzeOne(
       },
 
     /*
-     * 판정
+     * 최종 판정
      */
     judgement,
   };
 }
 
 /* =========================================================
-   Worker
+   Cloudflare Worker
    ========================================================= */
 
 export default {
@@ -2135,7 +2301,6 @@ export default {
         return json(
           {
             ok: false,
-
             message:
               "Cloudflare Worker에 DART_API_KEY Secret이 설정되지 않았습니다.",
           },
@@ -2149,7 +2314,7 @@ export default {
         );
 
       /*
-       * Health check
+       * Health Check
        */
       if (
         url.pathname ===
@@ -2182,7 +2347,6 @@ export default {
           return json(
             {
               ok: false,
-
               message:
                 "JSON 요청을 읽을 수 없습니다.",
             },
@@ -2221,7 +2385,6 @@ export default {
           return json(
             {
               ok: false,
-
               message:
                 "분석할 6자리 종목코드를 입력하세요.",
             },
@@ -2230,7 +2393,7 @@ export default {
         }
 
         /*
-         * 기업코드는 한 번만 조회
+         * 기업코드 XML은 한 번만 조회
          */
         const corpMapPromise =
           fetchCorpMap(
@@ -2240,9 +2403,6 @@ export default {
 
         /*
          * 종목별 독립 분석
-         *
-         * 한 종목 실패가
-         * 다른 종목 분석에 영향을 주지 않는다.
          */
         const results =
           await Promise.all(
@@ -2308,7 +2468,6 @@ export default {
       return json(
         {
           ok: false,
-
           message:
             e.message ||
             String(e),
